@@ -1,56 +1,64 @@
+import { GearApi } from "@gear-js/api";
+import { Keyring } from "@polkadot/keyring";
 import { setTimeout as wait } from "timers/promises";
-import { exec } from "child_process";
+import dotenv from "dotenv";
 
-console.log("🔥 BOT FILE LOADED");
+dotenv.config();
 
-function run(cmd) {
-  console.log(`➡️ Running: ${cmd}`);
-  return new Promise((resolve, reject) => {
-    exec(cmd, (err, stdout, stderr) => {
-      if (stdout) console.log("STDOUT:", stdout);
-      if (stderr) console.log("STDERR:", stderr);
-      if (err) {
-        console.log("❌ CMD ERROR:", err.message);
-        return reject(err);
-      }
-      resolve(stdout);
-    });
+console.log("🔥 SDK BOT STARTING...");
+
+let api;
+let account;
+
+async function init() {
+  console.log("🔌 Connecting to Vara...");
+
+  api = await GearApi.create({
+    providerAddress: "wss://rpc.vara.network",
   });
+
+  console.log("✅ Connected to Vara");
+
+  const keyring = new Keyring({ type: "sr25519" });
+
+  account = keyring.addFromUri(process.env.PRIVATE_KEY);
+
+  console.log("🔐 Wallet loaded:", account.address);
 }
 
 async function claim() {
-  try {
-    console.log("🪙 Claiming CHIP...");
-    await run("vara-wallet claim");
-  } catch {
-    console.log("⏳ Claim not available");
-  }
+  console.log("🪙 Claiming CHIP...");
+  
+  // TEMP placeholder (real contract call later)
+  console.log("⚠️ Claim not implemented yet");
 }
 
 async function trade() {
-  try {
-    console.log("📊 Fetching baskets...");
-    await run("vara-wallet basket query");
-
-    console.log("💰 Placing trades...");
-    await run("vara-wallet basket bet --amount 1");
-
-    console.log("🔁 Rebalancing...");
-    await run("vara-wallet basket settle");
-
-  } catch (err) {
-    console.log("❌ Trade error:", err.message);
-  }
+  console.log("📊 Trading cycle...");
+  
+  // TEMP placeholder
+  console.log("⚠️ Trade not implemented yet");
 }
 
 async function loop() {
   console.log("🚀 LOOP STARTED");
+
   while (true) {
-    console.log("🚀 Running cycle...");
+    console.log("🔁 New cycle");
+
     await claim();
     await trade();
+
+    console.log("⏳ Sleeping 5 mins...");
     await wait(300000);
   }
 }
 
-loop();
+async function main() {
+  await init();
+  await loop();
+}
+
+main().catch((err) => {
+  console.error("💥 Fatal error:", err);
+});
