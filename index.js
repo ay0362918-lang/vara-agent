@@ -1,11 +1,18 @@
 import { setTimeout as wait } from "timers/promises";
 import { exec } from "child_process";
 
+console.log("🔥 BOT FILE LOADED");
+
 function run(cmd) {
+  console.log(`➡️ Running: ${cmd}`);
   return new Promise((resolve, reject) => {
     exec(cmd, (err, stdout, stderr) => {
-      if (err) return reject(err);
-      console.log(stdout);
+      if (stdout) console.log("STDOUT:", stdout);
+      if (stderr) console.log("STDERR:", stderr);
+      if (err) {
+        console.log("❌ CMD ERROR:", err.message);
+        return reject(err);
+      }
       resolve(stdout);
     });
   });
@@ -27,7 +34,7 @@ async function trade() {
 
     console.log("💰 Placing trades...");
     await run("vara-wallet basket bet --amount 1");
-    
+
     console.log("🔁 Rebalancing...");
     await run("vara-wallet basket settle");
 
@@ -37,11 +44,12 @@ async function trade() {
 }
 
 async function loop() {
+  console.log("🚀 LOOP STARTED");
   while (true) {
     console.log("🚀 Running cycle...");
     await claim();
     await trade();
-    await wait(300000); // 5 minutes
+    await wait(300000);
   }
 }
 
