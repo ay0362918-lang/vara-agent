@@ -1,12 +1,10 @@
 FROM node:20
 
-# Install git (CRITICAL)
+# Install git
 RUN apt-get update && apt-get install -y git
 
-# Set working directory
 WORKDIR /app
 
-# Copy files
 COPY . .
 
 # Install dependencies
@@ -16,5 +14,8 @@ RUN npm install -g vara-wallet
 RUN npx skills add gear-foundation/vara-skills -g --all
 RUN npx skills add Adityaakr/polybaskets -g --all
 
-# Start app
-CMD ["node", "index.js"]
+# Install local deps (important)
+RUN npm install
+
+# Force start command
+CMD ["npm", "start"]
