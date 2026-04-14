@@ -58,10 +58,11 @@ async function trade() {
     console.log("💰 Placing bet...");
 
     const payload = {
-      bet: {
-        amount: 1_000_000_000_000, // small test amount
-      },
-    };
+  bet: {
+    amount: 1_000_000_000_000,
+    timestamp: Date.now() // 🔥 makes every tx unique
+  }
+};
 
     const tx = await api.message.send({
       destination: PROGRAM_ID,
@@ -87,10 +88,14 @@ async function loop() {
     console.log("🔁 New cycle");
 
     await claim();
+
+    // 🔥 ADD THIS
+    await wait(5000);
+
     await trade();
 
     console.log("⏳ Sleeping 1 min...");
-    await wait(60000); // 🔥 faster = more leaderboard activity
+    await wait(60000);
   }
 }
 
