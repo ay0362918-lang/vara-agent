@@ -7,6 +7,9 @@ dotenv.config();
 
 console.log("🔥 SDK BOT STARTING...");
 
+// 🔥 Replace if you confirm another program ID
+const PROGRAM_ID = "0x702395d43248eaa5f1fd4d9eadadc75b0fb1c7c5ae9ea20bf31375fd4358f403";
+
 let api;
 let account;
 
@@ -26,20 +29,57 @@ async function init() {
   console.log("🔐 Wallet loaded:", account.address);
 }
 
+// 🔥 CLAIM CHIP
 async function claim() {
-  console.log("🪙 Claiming CHIP...");
-  
-  // TEMP placeholder (real contract call later)
-  console.log("⚠️ Claim not implemented yet");
+  try {
+    console.log("🪙 Claiming CHIP...");
+
+    const payload = { claim: {} };
+
+    const tx = await api.message.send({
+      destination: PROGRAM_ID,
+      payload,
+      gasLimit: 2000000000,
+      value: 0,
+    });
+
+    await tx.signAndSend(account, ({ status }) => {
+      console.log("📡 CLAIM TX:", status.toString());
+    });
+
+  } catch (err) {
+    console.log("❌ Claim error:", err.message);
+  }
 }
 
+// 🔥 PLACE BET
 async function trade() {
-  console.log("📊 Trading cycle...");
-  
-  // TEMP placeholder
-  console.log("⚠️ Trade not implemented yet");
+  try {
+    console.log("💰 Placing bet...");
+
+    const payload = {
+      bet: {
+        amount: 1_000_000_000_000, // small test amount
+      },
+    };
+
+    const tx = await api.message.send({
+      destination: PROGRAM_ID,
+      payload,
+      gasLimit: 2000000000,
+      value: 0,
+    });
+
+    await tx.signAndSend(account, ({ status }) => {
+      console.log("📡 BET TX:", status.toString());
+    });
+
+  } catch (err) {
+    console.log("❌ Trade error:", err.message);
+  }
 }
 
+// 🔁 LOOP
 async function loop() {
   console.log("🚀 LOOP STARTED");
 
@@ -49,8 +89,8 @@ async function loop() {
     await claim();
     await trade();
 
-    console.log("⏳ Sleeping 5 mins...");
-    await wait(300000);
+    console.log("⏳ Sleeping 1 min...");
+    await wait(60000); // 🔥 faster = more leaderboard activity
   }
 }
 
