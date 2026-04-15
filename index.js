@@ -84,10 +84,16 @@ async function trade() {
 async function aggressiveTrade() {
   console.log("💰 Aggressive trading...");
 
-  for (let i = 0; i < 5; i++) {
+  const baskets = [5, 11, 16];
+
+  for (let i = 0; i < 3; i++) {
     try {
+      const basket_id = baskets[Math.floor(Math.random() * baskets.length)];
+
       const payload = {
         bet: {
+          basket_id,
+          outcome: Math.random() > 0.5 ? 0 : 1,
           amount: 1_000_000_000_000,
           timestamp: Date.now() + i
         }
@@ -100,10 +106,10 @@ async function aggressiveTrade() {
       });
 
       await tx.signAndSend(account, ({ status }) => {
-        console.log("📡 BET TX:", status.toString());
+        console.log(`📡 BET TX (basket ${basket_id}):`, status.toString());
       });
 
-      await wait(2000);
+      await wait(3000);
 
     } catch (err) {
       console.log("❌ Bet error:", err.message);
