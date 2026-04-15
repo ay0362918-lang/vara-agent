@@ -5,30 +5,39 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-console.log("🔥 REAL BOT STARTING...");
+console.log("🔥 LIVE BOT STARTING...");
 
-// 🔥 CONSTANTS
+// RPC
 const RPC = "wss://rpc.vara.network";
 
 // PROGRAMS
-const BET_LANE = "0xf5aa436669bb3fc97c1675d06949592e8617f889cbd055451f321113b17bb564";
-const PROGRAM_ID = "0x702395d43248eaa5f1fd4d9eadadc75b0fb1c7c5ae9ea20bf31375fd4358f403";
+const BET_LANE =
+  "0xf5aa436669bb3fc97c1675d06949592e8617f889cbd055451f321113b17bb564";
 
-// BET CONFIG
+// CONFIG
 const BET_AMOUNT = "100000000000000"; // 100 CHIP
-const BASKET_ID = 0;
+
+// 🔥 REAL LIVE BASKETS (IMPORTANT)
+const LIVE_BASKETS = [
+  "cm5-no-boe",
+  "cm5-no-maduro",
+  "cm5-no-gemini",
+  "cm5-no-jdg",
+  "cm5-no-claude5",
+  "cm5-no-marlins",
+];
 
 let api;
 let account;
 
-// 🔥 SAFE LOGGING
+// LOG
 function log(...args) {
   console.log(new Date().toLocaleTimeString(), ...args);
 }
 
-// 🔥 INIT
+// INIT
 async function init() {
-  log("🔌 Connecting to Vara...");
+  log("🔌 Connecting...");
 
   api = await GearApi.create({
     providerAddress: RPC,
@@ -37,39 +46,13 @@ async function init() {
   const keyring = new Keyring({ type: "sr25519" });
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
 
-  log("✅ Connected");
-  log("🔐 Wallet:", account.address);
+  log("✅ Connected:", account.address);
 }
 
-// 🔥 CLAIM CHIP
-async function claim() {
+// GET QUOTE
+async function getQuote(basketId) {
   try {
-    log("🪙 Claiming CHIP...");
-
-    const payload = { claim: {} };
-
-    const tx = await api.message.send({
-      destination: PROGRAM_ID,
-      payload,
-      gasLimit: 2_000_000_000,
-    });
-
-    await new Promise((resolve) => {
-      tx.signAndSend(account, ({ status }) => {
-        log("📡 CLAIM:", status.toString());
-        if (status.isFinalized) resolve();
-      });
-    });
-
-  } catch (err) {
-    log("❌ Claim error:", err.message);
-  }
-}
-
-// 🔥 GET SIGNED QUOTE (CRITICAL)
-async function getQuote() {
-  try {
-    log("📊 Getting quote...");
+    log("📊 Getting quote for:", basketId);
 
     const res = await fetch(
       "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote",
@@ -80,7 +63,7 @@ async function getQuote() {
         },
         body: JSON.stringify({
           user: account.address,
-          basketId: BASKET_ID,
+          basketId: basketId, // 🔥 STRING ID
           amount: BET_AMOUNT,
           targetProgramId: BET_LANE,
         }),
@@ -89,7 +72,7 @@ async function getQuote() {
 
     const data = await res.json();
 
-    if (!data) throw new Error("No quote received");
+    if (!data) throw new Error("No quote");
 
     log("✅ Quote received");
 
@@ -100,13 +83,13 @@ async function getQuote() {
   }
 }
 
-// 🔥 PLACE REAL BET (THIS COUNTS)
-async function placeBet(quote) {
+// PLACE BET
+async function placeBet(basketId, quote) {
   try {
-    log("💰 Placing REAL bet...");
+    log("💰 Betting on:", basketId);
 
     const payload = {
-      PlaceBet: [BASKET_ID, BET_AMOUNT, quote],
+      PlaceBet: [basketId, BET_AMOUNT, quote],
     };
 
     const tx = await api.message.send({
@@ -115,46 +98,39 @@ async function placeBet(quote) {
       gasLimit: 20_000_000_000,
     });
 
-    await new Promise((resolve, reject) => {
+    await new Promise((resolve) => {
       tx.signAndSend(account, ({ status }) => {
         log("📡 BET:", status.toString());
 
         if (status.isFinalized) resolve();
-      }).catch(reject);
+      });
     });
-
   } catch (err) {
     log("❌ Bet error:", err.message);
   }
 }
 
-// 🔁 MAIN LOOP
+// LOOP
 async function loop() {
   log("🚀 LOOP STARTED");
 
   while (true) {
     try {
-      log("🔁 New cycle");
+      const basketId =
+        LIVE_BASKETS[Math.floor(Math.random() * LIVE_BASKETS.length)];
 
-      // 1. CLAIM
-      await claim();
+      log("🎯 Selected:", basketId);
 
-      await wait(3000);
-
-      // 2. GET QUOTE
-      const quote = await getQuote();
+      const quote = await getQuote(basketId);
 
       if (!quote) {
-        log("⚠️ Skipping bet (no quote)");
         await wait(5000);
         continue;
       }
 
-      // 3. PLACE BET (IMMEDIATELY)
-      await placeBet(quote);
+      await placeBet(basketId, quote);
 
-      // 🔥 SHORT DELAY = HIGH ACTIVITY
-      await wait(10000);
+      await wait(8000); // speed
 
     } catch (err) {
       log("💥 Loop error:", err.message);
@@ -163,19 +139,12 @@ async function loop() {
   }
 }
 
-// 🔥 ERROR HANDLING (PREVENT CRASH)
-process.on("uncaughtException", (err) => {
-  console.error("UNCAUGHT:", err);
-});
-
-process.on("unhandledRejection", (err) => {
-  console.error("UNHANDLED:", err);
-});
-
-// 🚀 START
+// START
 async function main() {
   await init();
   await loop();
 }
 
-main();
+main().catch((err) => {
+  console.error("💥 Fatal:", err);
+});
