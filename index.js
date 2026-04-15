@@ -81,8 +81,6 @@ async function trade() {
 }
 
 // 🔁 LOOP
-import { setTimeout as wait } from "timers/promises";
-
 async function aggressiveTrade() {
   console.log("💰 Aggressive trading...");
 
@@ -101,11 +99,12 @@ async function aggressiveTrade() {
         gasLimit: 20_000_000_000
       });
 
-      await tx.signAndSend(keypair, ({ status }) => {
+      await tx.signAndSend(account, ({ status }) => {
         console.log("📡 BET TX:", status.toString());
       });
 
-      await wait(2000); // small spacing
+      await wait(2000);
+
     } catch (err) {
       console.log("❌ Bet error:", err.message);
     }
@@ -131,7 +130,7 @@ async function loop() {
   }
 }
 
-loop();
+
 
 async function main() {
   await init();
