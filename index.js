@@ -5,144 +5,177 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-console.log("🔥 SDK BOT STARTING...");
+console.log("🔥 REAL BOT STARTING...");
 
-// 🔥 Replace if you confirm another program ID
+// 🔥 CONSTANTS
+const RPC = "wss://rpc.vara.network";
+
+// PROGRAMS
+const BET_LANE = "0xf5aa436669bb3fc97c1675d06949592e8617f889cbd055451f321113b17bb564";
 const PROGRAM_ID = "0x702395d43248eaa5f1fd4d9eadadc75b0fb1c7c5ae9ea20bf31375fd4358f403";
+
+// BET CONFIG
+const BET_AMOUNT = "100000000000000"; // 100 CHIP
+const BASKET_ID = 0;
 
 let api;
 let account;
 
+// 🔥 SAFE LOGGING
+function log(...args) {
+  console.log(new Date().toLocaleTimeString(), ...args);
+}
+
+// 🔥 INIT
 async function init() {
-  console.log("🔌 Connecting to Vara...");
+  log("🔌 Connecting to Vara...");
 
   api = await GearApi.create({
-    providerAddress: "wss://rpc.vara.network",
+    providerAddress: RPC,
   });
 
-  console.log("✅ Connected to Vara");
-
   const keyring = new Keyring({ type: "sr25519" });
-
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
 
-  console.log("🔐 Wallet loaded:", account.address);
+  log("✅ Connected");
+  log("🔐 Wallet:", account.address);
 }
 
 // 🔥 CLAIM CHIP
 async function claim() {
   try {
-    console.log("🪙 Claiming CHIP...");
+    log("🪙 Claiming CHIP...");
 
     const payload = { claim: {} };
 
     const tx = await api.message.send({
       destination: PROGRAM_ID,
       payload,
-      gasLimit: 2000000000,
-      value: 0,
+      gasLimit: 2_000_000_000,
     });
 
-    await tx.signAndSend(account, ({ status }) => {
-      console.log("📡 CLAIM TX:", status.toString());
+    await new Promise((resolve) => {
+      tx.signAndSend(account, ({ status }) => {
+        log("📡 CLAIM:", status.toString());
+        if (status.isFinalized) resolve();
+      });
     });
 
   } catch (err) {
-    console.log("❌ Claim error:", err.message);
+    log("❌ Claim error:", err.message);
   }
 }
 
-// 🔥 PLACE BET
-async function trade() {
+// 🔥 GET SIGNED QUOTE (CRITICAL)
+async function getQuote() {
   try {
-    console.log("💰 Placing bet...");
+    log("📊 Getting quote...");
+
+    const res = await fetch(
+      "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user: account.address,
+          basketId: BASKET_ID,
+          amount: BET_AMOUNT,
+          targetProgramId: BET_LANE,
+        }),
+      }
+    );
+
+    const data = await res.json();
+
+    if (!data) throw new Error("No quote received");
+
+    log("✅ Quote received");
+
+    return data;
+  } catch (err) {
+    log("❌ Quote error:", err.message);
+    return null;
+  }
+}
+
+// 🔥 PLACE REAL BET (THIS COUNTS)
+async function placeBet(quote) {
+  try {
+    log("💰 Placing REAL bet...");
 
     const payload = {
-  bet: {
-    amount: 1_000_000_000_000,
-    timestamp: Date.now() // 🔥 makes every tx unique
-  }
-};
+      PlaceBet: [BASKET_ID, BET_AMOUNT, quote],
+    };
 
     const tx = await api.message.send({
-      destination: PROGRAM_ID,
+      destination: BET_LANE,
       payload,
-      gasLimit: 2000000000,
-      value: 0,
+      gasLimit: 20_000_000_000,
     });
 
-    await tx.signAndSend(account, ({ status }) => {
-      console.log("📡 BET TX:", status.toString());
+    await new Promise((resolve, reject) => {
+      tx.signAndSend(account, ({ status }) => {
+        log("📡 BET:", status.toString());
+
+        if (status.isFinalized) resolve();
+      }).catch(reject);
     });
 
   } catch (err) {
-    console.log("❌ Trade error:", err.message);
+    log("❌ Bet error:", err.message);
   }
 }
 
-// 🔁 LOOP
-async function aggressiveTrade() {
-  console.log("💰 Aggressive trading...");
+// 🔁 MAIN LOOP
+async function loop() {
+  log("🚀 LOOP STARTED");
 
-  const baskets = [5, 11, 16];
-
-  for (let i = 0; i < 3; i++) {
+  while (true) {
     try {
-      const basket_id = baskets[Math.floor(Math.random() * baskets.length)];
+      log("🔁 New cycle");
 
-      const payload = {
-        bet: {
-          basket_id,
-          outcome: Math.random() > 0.5 ? 0 : 1,
-          amount: 1_000_000_000_000,
-          timestamp: Date.now() + i
-        }
-      };
-
-      const tx = await api.message.send({
-        destination: PROGRAM_ID,
-        payload,
-        gasLimit: 20_000_000_000
-      });
-
-      await tx.signAndSend(account, ({ status }) => {
-        console.log(`📡 BET TX (basket ${basket_id}):`, status.toString());
-      });
+      // 1. CLAIM
+      await claim();
 
       await wait(3000);
 
+      // 2. GET QUOTE
+      const quote = await getQuote();
+
+      if (!quote) {
+        log("⚠️ Skipping bet (no quote)");
+        await wait(5000);
+        continue;
+      }
+
+      // 3. PLACE BET (IMMEDIATELY)
+      await placeBet(quote);
+
+      // 🔥 SHORT DELAY = HIGH ACTIVITY
+      await wait(10000);
+
     } catch (err) {
-      console.log("❌ Bet error:", err.message);
+      log("💥 Loop error:", err.message);
+      await wait(5000);
     }
   }
 }
 
-async function loop() {
-  console.log("🚀 AGGRESSIVE LOOP STARTED");
+// 🔥 ERROR HANDLING (PREVENT CRASH)
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT:", err);
+});
 
-  while (true) {
-    console.log("🔁 New cycle");
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED:", err);
+});
 
-    // CLAIM ONCE
-    await claim();
-
-    await wait(3000);
-
-    // 🔥 SPAM BETS
-    await aggressiveTrade();
-
-    // 🔥 VERY SHORT DELAY
-    await wait(10000); // 10 seconds
-  }
-}
-
-
-
+// 🚀 START
 async function main() {
   await init();
   await loop();
 }
 
-main().catch((err) => {
-  console.error("💥 Fatal error:", err);
-});
+main();
