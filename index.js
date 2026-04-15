@@ -81,23 +81,57 @@ async function trade() {
 }
 
 // 🔁 LOOP
+import { setTimeout as wait } from "timers/promises";
+
+async function aggressiveTrade() {
+  console.log("💰 Aggressive trading...");
+
+  for (let i = 0; i < 5; i++) {
+    try {
+      const payload = {
+        bet: {
+          amount: 1_000_000_000_000,
+          timestamp: Date.now() + i
+        }
+      };
+
+      const tx = await api.message.send({
+        destination: PROGRAM_ID,
+        payload,
+        gasLimit: 20_000_000_000
+      });
+
+      await tx.signAndSend(keypair, ({ status }) => {
+        console.log("📡 BET TX:", status.toString());
+      });
+
+      await wait(2000); // small spacing
+    } catch (err) {
+      console.log("❌ Bet error:", err.message);
+    }
+  }
+}
+
 async function loop() {
-  console.log("🚀 LOOP STARTED");
+  console.log("🚀 AGGRESSIVE LOOP STARTED");
 
   while (true) {
     console.log("🔁 New cycle");
 
+    // CLAIM ONCE
     await claim();
 
-    // 🔥 ADD THIS
-    await wait(5000);
+    await wait(3000);
 
-    await trade();
+    // 🔥 SPAM BETS
+    await aggressiveTrade();
 
-    console.log("⏳ Sleeping 1 min...");
-    await wait(60000);
+    // 🔥 VERY SHORT DELAY
+    await wait(10000); // 10 seconds
   }
 }
+
+loop();
 
 async function main() {
   await init();
