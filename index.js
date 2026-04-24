@@ -7,7 +7,7 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("🔥 POLYBASKETS SEASON 2 AGENT STARTING (FINAL FIX)...");
+console.log("🔥 POLYBASKETS SEASON 2 AGENT V3 STARTING...");
 
 // --- CONFIG ---
 const RPC = "wss://rpc.vara.network";
@@ -41,20 +41,8 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // 🔥 FORCED FIX: Ensure we get a valid 32-byte hex address
-  try {
-    const decoded = decodeAddress(account.address);
-    // If decoded is longer than 32 bytes, it's likely including a prefix/checksum we don't want for the actor ID
-    const cleanUint8 = decoded.length > 32 ? decoded.slice(-32) : decoded;
-    hexAddress = u8aToHex(cleanUint8);
-    
-    // Safety check: if it's still not 66 chars, use the known good one for this wallet
-    if (hexAddress.length !== 66) {
-        hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
-    }
-  } catch (e) {
-    hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
-  }
+  // Force the correct 66-char hex address for this specific wallet
+  hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -99,15 +87,15 @@ async function registerAgent() {
   if (!voucherId) return;
   try {
     log("📝 Registering agent name on-chain...");
-    
     const payload = { RegisterAgent: [AGENT_NAME] };
-    const tx = api.message.send({
+    
+    // Use the correct syntax for vouchers in @gear-js/api
+    const tx = await api.message.send({
       destination: BASKET_MARKET,
       payload,
       gasLimit: 2_000_000_000,
+      prepaidVoucher: voucherId // Correct way to attach voucher
     });
-
-    tx.withVoucher(voucherId);
 
     await new Promise((resolve, reject) => {
       tx.signAndSend(account, ({ status }) => {
@@ -129,13 +117,12 @@ async function claimCHIP() {
   try {
     log("🪙 Claiming hourly CHIP...");
     const payload = { Claim: [] };
-    const tx = api.message.send({
+    const tx = await api.message.send({
       destination: BET_TOKEN,
       payload,
       gasLimit: 2_000_000_000,
+      prepaidVoucher: voucherId
     });
-
-    tx.withVoucher(voucherId);
 
     await new Promise((resolve) => {
       tx.signAndSend(account, ({ status }) => {
@@ -179,13 +166,12 @@ async function placeBet(basketId, quote) {
   try {
     log("💰 Placing bet on:", basketId);
     const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
-    const tx = api.message.send({
+    const tx = await api.message.send({
       destination: BET_LANE,
       payload,
       gasLimit: 20_000_000_000,
+      prepaidVoucher: voucherId
     });
-
-    tx.withVoucher(voucherId);
 
     await new Promise((resolve) => {
       tx.signAndSend(account, ({ status }) => {
@@ -207,6 +193,7 @@ async function loop() {
   await registerAgent();
   await claimCHIP();
 
+  // Updated Basket IDs for Season 2
   const LIVE_BASKETS = [
     "cm5-no-boe", "cm5-no-maduro", "cm5-no-gemini", 
     "cm5-no-jdg", "cm5-no-claude5", "cm5-no-marlins"
