@@ -42,8 +42,9 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // Get the hex address from the account
-  hexAddress = u8aToHex(decodeAddress(account.address));
+  // Correctly derive the hex address from the account.address
+  // Use account.addressHrx for the hex representation of the address
+  hexAddress = account.addressHrx;
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -88,7 +89,9 @@ async function registerAgent() {
   if (!voucherId) return;
   try {
     log("📝 Registering agent name on-chain...");
-    const payload = { RegisterAgent: [AGENT_NAME] };
+    // Add a random suffix to AGENT_NAME to ensure uniqueness
+    const uniqueAgentName = `${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`;
+    const payload = { RegisterAgent: [uniqueAgentName] };
     
     const tx = await api.message.send({
       destination: BASKET_MARKET,
@@ -140,16 +143,18 @@ async function claimCHIP() {
 async function fetchMarkets() {
   try {
     log("🔍 Fetching active Polymarket markets...");
-    const now = new Date().toISOString();
-    const res = await fetch(`${POLYMARKET_API}?closed=false&order=volume24hr&ascending=false&end_date_min=${now}&limit=10`);
+    const now = new Date();
+    // Filter for markets ending at least 1 hour from now to ensure they are active enough
+    const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+    const res = await fetch(`${POLYMARKET_API}?closed=false&order=volume24hr&ascending=false&end_date_min=${oneHourLater.toISOString()}&limit=10`);
     const markets = await res.json();
     
     return markets.map(m => ({
       poly_market_id: String(m.id),
       poly_slug: m.slug,
       question: m.question,
-      prices: JSON.parse(m.outcomePrices)
-    })).filter(m => m.prices && m.prices.length >= 2);
+      outcomePrices: m.outcomePrices ? JSON.parse(m.outcomePrices) : []
+    })).filter(m => m.outcomePrices && m.outcomePrices.length >= 2);
   } catch (err) {
     log("❌ Market fetch error:", err.message);
     return [];
@@ -161,7 +166,7 @@ async function createAutonomousBasket() {
   try {
     const markets = await fetchMarkets();
     if (markets.length < 2) {
-      log("⚠️ Not enough active markets found");
+      log("⚠️ Not enough active markets found to create a basket");
       return null;
     }
 
@@ -182,10 +187,10 @@ async function createAutonomousBasket() {
       poly_market_id: m.poly_market_id,
       poly_slug: m.poly_slug,
       weight_bps: 5000, // 50% each
-      selected_outcome: "YES"
+      selected_outcome: Math.random() > 0.5 ? "YES" : "NO" // Randomly select YES or NO
     }));
 
-    const basketName = `Auto-${Math.random().toString(36).substring(7)}`;
+    const basketName = `Auto-${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`;
     const payload = {
       CreateBasket: [
         basketName,
@@ -205,16 +210,17 @@ async function createAutonomousBasket() {
     return new Promise((resolve) => {
       tx.signAndSend(account, ({ status, events }) => {
         if (status.isFinalized) {
-          // Find the basket ID from events
-          for (const { event } of events) {
-            if (event.method === 'UserMessageSent') {
-              // In Gear, the reply usually contains the result.
-              // For simplicity in this script, we'll wait for the next block and query the last basket.
-              log("✅ Basket creation transaction finalized");
-              resolve(true);
-            }
+          log("✅ Basket creation transaction finalized");
+          // Extract the basket ID from the events
+          const basketCreatedEvent = events.find(e => e.event.method === 'BasketCreated');
+          if (basketCreatedEvent) {
+            const basketId = basketCreatedEvent.event.data.basketId.toString();
+            log(`🎉 Created Basket ID: ${basketId}`);
+            resolve(basketId);
+          } else {
+            log("⚠️ BasketCreated event not found after transaction finalized.");
+            resolve(null);
           }
-          resolve(true);
         }
       });
     });
@@ -222,26 +228,6 @@ async function createAutonomousBasket() {
     log("❌ Basket creation error:", err.message);
     return null;
   }
-}
-
-async function getLastBasketId() {
-  try {
-    // Query the contract for the user's baskets
-    // This is a simplified way to get the latest basket ID created by the user
-    const payload = { GetUserBaskets: [hexAddress] };
-    const reply = await api.program.read({
-      programId: BASKET_MARKET,
-      payload
-    }, api.code.get(BASKET_MARKET));
-    
-    const baskets = reply.toHuman();
-    if (Array.isArray(baskets) && baskets.length > 0) {
-      return baskets[baskets.length - 1];
-    }
-  } catch (err) {
-    log("⚠️ Could not fetch user baskets:", err.message);
-  }
-  return null;
 }
 
 async function getQuote(basketId) {
@@ -309,22 +295,13 @@ async function loop() {
       log("🔄 Starting autonomous cycle...");
       
       // 1. Create a new basket
-      const created = await createAutonomousBasket();
-      if (created) {
-        // Wait a bit for indexer/state to catch up
-        await wait(5000);
-        
-        // 2. Get the ID of the basket we just created
-        const basketId = await getLastBasketId();
-        
-        if (basketId) {
-          log(`🎯 Target Basket ID: ${basketId}`);
-          
-          // 3. Get quote and place bet
-          const quote = await getQuote(basketId);
-          if (quote) {
-            await placeBet(basketId, quote);
-          }
+      const basketId = await createAutonomousBasket();
+      
+      if (basketId) {
+        // 2. Get quote and place bet
+        const quote = await getQuote(basketId);
+        if (quote) {
+          await placeBet(basketId, quote);
         }
       }
 
