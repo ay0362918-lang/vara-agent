@@ -205,34 +205,51 @@ async function createAutonomousBasket() {
     });
 
     return new Promise((resolve) => {
+      let settled = false;
       let basketIdCaptured = null;
 
+      const finish = (value) => {
+        if (!settled) {
+          settled = true;
+          resolve(value);
+        }
+      };
+
       tx.signAndSend(account, ({ status, events }) => {
-        // Debug: Log event types to see what's happening
-        events.forEach(({ event }) => {
-          // Check for any message sent from the basket contract
-          if (event.section === 'gear' && event.method === 'UserMessageSent') {
-            const { message } = event.data;
-            if (message.source.toHex() === BASKET_MARKET) {
-              const basketId = message.payload.toHex();
-              log(`🎯 Extracted Basket ID from Event: ${basketId}`);
-              basketIdCaptured = basketId;
-              resolve(basketId);
+        for (const { event } of events) {
+          if (event.section === "gear" && event.method === "UserMessageSent") {
+            // UserMessageSent data = [message, expiration]
+            const message = event.data[0];
+
+            if (!message) continue;
+
+            const source = message.source?.toHex?.();
+            const payloadHex = message.payload?.toHex?.();
+
+            if (source === BASKET_MARKET && payloadHex && payloadHex !== "0x") {
+              log(`🎯 Extracted Basket ID from Event: ${payloadHex}`);
+              basketIdCaptured = payloadHex;
+              finish(payloadHex);
+              return;
             }
           }
-          // Also check for MessagesDispatched which sometimes contains the result
-          if (event.section === 'gear' && event.method === 'MessagesDispatched') {
-             // If we already captured it, no need to check further
-             if (basketIdCaptured) return;
+
+          if (event.section === "system" && event.method === "ExtrinsicFailed") {
+            log("❌ Basket creation extrinsic failed");
+            finish(null);
+            return;
           }
-        });
+        }
 
         if (status.isFinalized) {
           log("✅ Basket creation finalized");
           if (!basketIdCaptured) {
-            resolve(true); 
+            finish(null);
           }
         }
+      }).catch((err) => {
+        log("❌ signAndSend error:", err.message);
+        finish(null);
       });
     });
   } catch (err) {
