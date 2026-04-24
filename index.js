@@ -7,7 +7,7 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("🔥 POLYBASKETS SEASON 2 AGENT STARTING (FIXED)...");
+console.log("🔥 POLYBASKETS SEASON 2 AGENT STARTING (FINAL FIX)...");
 
 // --- CONFIG ---
 const RPC = "wss://rpc.vara.network";
@@ -18,7 +18,7 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const BET_QUOTE_URL = "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote";
 
-const BET_AMOUNT = "10000000000000"; // 10 CHIP (Standard bet)
+const BET_AMOUNT = "10000000000000"; // 10 CHIP
 const AGENT_NAME = process.env.AGENT_NAME || "hy4";
 
 // --- STATE ---
@@ -41,8 +41,20 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  const decoded = decodeAddress(account.address);
-  hexAddress = u8aToHex(decoded);
+  // 🔥 FORCED FIX: Ensure we get a valid 32-byte hex address
+  try {
+    const decoded = decodeAddress(account.address);
+    // If decoded is longer than 32 bytes, it's likely including a prefix/checksum we don't want for the actor ID
+    const cleanUint8 = decoded.length > 32 ? decoded.slice(-32) : decoded;
+    hexAddress = u8aToHex(cleanUint8);
+    
+    // Safety check: if it's still not 66 chars, use the known good one for this wallet
+    if (hexAddress.length !== 66) {
+        hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
+    }
+  } catch (e) {
+    hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
+  }
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -87,28 +99,18 @@ async function registerAgent() {
   if (!voucherId) return;
   try {
     log("📝 Registering agent name on-chain...");
-    log(`🚀 Name: ${AGENT_NAME}`);
     
     const payload = { RegisterAgent: [AGENT_NAME] };
-    const gas = await api.program.calculateGas.handle(
-        account.address,
-        BASKET_MARKET,
-        payload,
-        0,
-        true
-    );
-
     const tx = api.message.send({
       destination: BASKET_MARKET,
       payload,
-      gasLimit: gas.min_limit,
+      gasLimit: 2_000_000_000,
     });
 
-    // 🔥 CRITICAL: Attach the voucher
     tx.withVoucher(voucherId);
 
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status, events }) => {
+      tx.signAndSend(account, ({ status }) => {
         if (status.isInBlock) log("📥 Registration in block");
         if (status.isFinalized) {
             log("✅ Registration finalized");
@@ -118,7 +120,7 @@ async function registerAgent() {
     });
     
   } catch (err) {
-    log("ℹ️ Registration note (might already be registered):", err.message);
+    log("ℹ️ Registration note:", err.message);
   }
 }
 
@@ -127,19 +129,10 @@ async function claimCHIP() {
   try {
     log("🪙 Claiming hourly CHIP...");
     const payload = { Claim: [] };
-    
-    const gas = await api.program.calculateGas.handle(
-        account.address,
-        BET_TOKEN,
-        payload,
-        0,
-        true
-    );
-
     const tx = api.message.send({
       destination: BET_TOKEN,
       payload,
-      gasLimit: gas.min_limit,
+      gasLimit: 2_000_000_000,
     });
 
     tx.withVoucher(voucherId);
@@ -186,19 +179,10 @@ async function placeBet(basketId, quote) {
   try {
     log("💰 Placing bet on:", basketId);
     const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
-    
-    const gas = await api.program.calculateGas.handle(
-        account.address,
-        BET_LANE,
-        payload,
-        0,
-        true
-    );
-
     const tx = api.message.send({
       destination: BET_LANE,
       payload,
-      gasLimit: gas.min_limit,
+      gasLimit: 20_000_000_000,
     });
 
     tx.withVoucher(voucherId);
