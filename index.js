@@ -2,80 +2,147 @@ import { GearApi } from "@gear-js/api";
 import { Keyring } from "@polkadot/keyring";
 import { setTimeout as wait } from "timers/promises";
 import dotenv from "dotenv";
+import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("🔥 LIVE BOT STARTING...");
+console.log("🔥 POLYBASKETS SEASON 2 AGENT STARTING...");
 
-// RPC
+// --- CONFIG ---
 const RPC = "wss://rpc.vara.network";
+const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
+const BET_TOKEN = "0x186f6cda18fea13d9fc5969eec5a379220d6726f64c1d5f4b346e89271f917bc";
+const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc";
 
-// PROGRAMS
-const BET_LANE =
-  "0xf5aa436669bb3fc97c1675d06949592e8617f889cbd055451f321113b17bb564";
+const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
+const BET_QUOTE_URL = "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote";
 
-// CONFIG
 const BET_AMOUNT = "100000000000000"; // 100 CHIP
+const AGENT_NAME = process.env.AGENT_NAME || "my-competitive-agent";
 
-// 🔥 REAL LIVE BASKETS (IMPORTANT)
-const LIVE_BASKETS = [
-  "cm5-no-boe",
-  "cm5-no-maduro",
-  "cm5-no-gemini",
-  "cm5-no-jdg",
-  "cm5-no-claude5",
-  "cm5-no-marlins",
-];
-
+// --- STATE ---
 let api;
 let account;
+let voucherId;
 
-// LOG
 function log(...args) {
-  console.log(new Date().toLocaleTimeString(), ...args);
+  console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
 }
 
-// INIT
 async function init() {
-  log("🔌 Connecting...");
-
-  api = await GearApi.create({
-    providerAddress: RPC,
-  });
-
+  log("🔌 Connecting to Vara...");
+  api = await GearApi.create({ providerAddress: RPC });
+  
   const keyring = new Keyring({ type: "sr25519" });
+  if (!process.env.PRIVATE_KEY) {
+    throw new Error("PRIVATE_KEY missing in .env");
+  }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
-
   log("✅ Connected:", account.address);
 }
 
-// GET QUOTE
+async function ensureVoucher() {
+  try {
+    log("🎫 Checking voucher status...");
+    const res = await fetch(`${VOUCHER_URL}/${account.address}`);
+    const data = await res.json();
+
+    if (data.voucherId && data.canTopUpNow === false) {
+      log("✅ Voucher active:", data.voucherId);
+      voucherId = data.voucherId;
+      return;
+    }
+
+    log("🆕 Requesting/Topping up voucher...");
+    const postRes = await fetch(VOUCHER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account: account.address,
+        programs: [BASKET_MARKET, BET_TOKEN, BET_LANE]
+      })
+    });
+    
+    const postData = await postRes.json();
+    if (postData.voucherId) {
+      log("✅ Voucher ready:", postData.voucherId);
+      voucherId = postData.voucherId;
+    } else if (postRes.status === 429) {
+      log("⏳ Rate limited, using existing voucher if available");
+      if (data.voucherId) voucherId = data.voucherId;
+    }
+  } catch (err) {
+    log("⚠️ Voucher error:", err.message);
+  }
+}
+
+async function registerAgent() {
+  try {
+    log("📝 Checking agent registration...");
+    // In a real implementation, we'd query the contract first. 
+    // For this script, we'll try to register and catch "AlreadyRegistered" if it exists.
+    // This matches the STARTER_PROMPT logic.
+    log(`🚀 Registering as: ${AGENT_NAME}`);
+    
+    const payload = { RegisterAgent: [AGENT_NAME] };
+    const tx = await api.message.send({
+      destination: BASKET_MARKET,
+      payload,
+      gasLimit: 2_000_000_000,
+    });
+
+    await new Promise((resolve, reject) => {
+      tx.signAndSend(account, ({ status, events }) => {
+        if (status.isInBlock) log("📥 Registration in block");
+        if (status.isFinalized) resolve();
+      });
+    }).catch(e => log("ℹ️ Registration note:", e.message));
+    
+  } catch (err) {
+    log("ℹ️ Registration check:", err.message);
+  }
+}
+
+async function claimCHIP() {
+  try {
+    log("🪙 Claiming hourly CHIP...");
+    const payload = { Claim: [] };
+    const tx = await api.message.send({
+      destination: BET_TOKEN,
+      payload,
+      gasLimit: 2_000_000_000,
+    });
+
+    await new Promise((resolve) => {
+      tx.signAndSend(account, ({ status }) => {
+        if (status.isFinalized) {
+          log("✅ CHIP Claimed");
+          resolve();
+        }
+      });
+    });
+  } catch (err) {
+    log("❌ Claim error:", err.message);
+  }
+}
+
 async function getQuote(basketId) {
   try {
     log("📊 Getting quote for:", basketId);
-
-    const res = await fetch(
-      "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          user: account.address,
-          basketId: basketId, // 🔥 STRING ID
-          amount: BET_AMOUNT,
-          targetProgramId: BET_LANE,
-        }),
-      }
-    );
+    const res = await fetch(BET_QUOTE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user: account.address,
+        basketId: basketId,
+        amount: BET_AMOUNT,
+        targetProgramId: BET_LANE,
+      }),
+    });
 
     const data = await res.json();
-
-    if (!data) throw new Error("No quote");
-
+    if (!data || data.error) throw new Error(data.error || "No quote");
     log("✅ Quote received");
-
     return data;
   } catch (err) {
     log("❌ Quote error:", err.message);
@@ -83,15 +150,10 @@ async function getQuote(basketId) {
   }
 }
 
-// PLACE BET
 async function placeBet(basketId, quote) {
   try {
-    log("💰 Betting on:", basketId);
-
-    const payload = {
-      PlaceBet: [basketId, BET_AMOUNT, quote],
-    };
-
+    log("💰 Placing bet on:", basketId);
+    const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
     const tx = await api.message.send({
       destination: BET_LANE,
       payload,
@@ -100,8 +162,7 @@ async function placeBet(basketId, quote) {
 
     await new Promise((resolve) => {
       tx.signAndSend(account, ({ status }) => {
-        log("📡 BET:", status.toString());
-
+        log("📡 Status:", status.toString());
         if (status.isFinalized) resolve();
       });
     });
@@ -110,36 +171,44 @@ async function placeBet(basketId, quote) {
   }
 }
 
-// LOOP
 async function loop() {
   log("🚀 LOOP STARTED");
+  
+  // Initial setup
+  await ensureVoucher();
+  await registerAgent();
+  await claimCHIP();
+
+  const LIVE_BASKETS = [
+    "cm5-no-boe", "cm5-no-maduro", "cm5-no-gemini", 
+    "cm5-no-jdg", "cm5-no-claude5", "cm5-no-marlins"
+  ];
 
   while (true) {
     try {
-      const basketId =
-        LIVE_BASKETS[Math.floor(Math.random() * LIVE_BASKETS.length)];
+      // 1. Every hour (approx), try to claim and top up voucher
+      // (Simplified: just check every loop, the backend handles the 1h window)
+      await ensureVoucher();
+      await claimCHIP();
 
-      log("🎯 Selected:", basketId);
-
+      // 2. Pick a basket and bet
+      const basketId = LIVE_BASKETS[Math.floor(Math.random() * LIVE_BASKETS.length)];
       const quote = await getQuote(basketId);
 
-      if (!quote) {
-        await wait(5000);
-        continue;
+      if (quote) {
+        await placeBet(basketId, quote);
       }
 
-      await placeBet(basketId, quote);
-
-      await wait(8000); // speed
+      log("😴 Waiting for next round...");
+      await wait(60000); // Wait 1 minute between bets to keep activity high but sustainable
 
     } catch (err) {
       log("💥 Loop error:", err.message);
-      await wait(5000);
+      await wait(10000);
     }
   }
 }
 
-// START
 async function main() {
   await init();
   await loop();
@@ -147,4 +216,5 @@ async function main() {
 
 main().catch((err) => {
   console.error("💥 Fatal:", err);
+  process.exit(1);
 });
