@@ -219,7 +219,8 @@ async function createAutonomousBasket() {
 
 async function getUserBaskets() {
   try {
-    const reply = await api.program.read({
+    // Fixed: Correct method is api.programState.read for Gear SDK
+    const reply = await api.programState.read({
       programId: BASKET_MARKET,
       payload: { GetUserBaskets: [hexAddress] }
     });
