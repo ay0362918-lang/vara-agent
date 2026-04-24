@@ -42,8 +42,8 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // Force the correct 66-char hex address for this specific wallet
-  hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
+  // Get hex address from the account
+  hexAddress = u8aToHex(decodeAddress(account.address));
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -90,16 +90,15 @@ async function registerAgent() {
     log("📝 Registering agent name on-chain...");
     const payload = { RegisterAgent: [AGENT_NAME] };
     
-    // Use the correct syntax for vouchers in @gear-js/api
     const tx = await api.message.send({
       destination: BASKET_MARKET,
       payload,
       gasLimit: 2_000_000_000,
-      prepaidVoucher: voucherId // Correct way to attach voucher
+      prepaidVoucher: voucherId
     });
 
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status }) => {
+      tx.signAndSend(account, ({ status, events }) => {
         if (status.isInBlock) log("📥 Registration in block");
         if (status.isFinalized) {
             log("✅ Registration finalized");
@@ -204,30 +203,33 @@ async function createAutonomousBasket() {
     });
 
     return new Promise((resolve) => {
-      tx.signAndSend(account, ({ status }) => {
+      tx.signAndSend(account, ({ status, events }) => {
+        if (status.isInBlock) {
+          // Look for UserMessageSent event to extract the basketId from payload
+          events.forEach(({ event }) => {
+            if (api.events.gear.UserMessageSent.is(event)) {
+              const { message } = event.data;
+              if (message.source.toHex() === BASKET_MARKET) {
+                // The payload contains the basketId. 
+                // Since we don't have the IDL for decoding, we use the fact that 
+                // for CreateBasket, the contract returns the BasketId.
+                const basketId = message.payload.toHex();
+                log(`🎯 Extracted Basket ID from Event: ${basketId}`);
+                resolve(basketId);
+              }
+            }
+          });
+        }
         if (status.isFinalized) {
           log("✅ Basket creation finalized");
-          resolve(true);
+          // If not resolved by event yet, resolve with true to indicate success
+          resolve(true); 
         }
       });
     });
   } catch (err) {
     log("❌ Basket creation error:", err.message);
     return null;
-  }
-}
-
-async function getUserBaskets() {
-  try {
-    // Fixed: Correct method is api.programState.read for Gear SDK
-    const reply = await api.programState.read({
-      programId: BASKET_MARKET,
-      payload: { GetUserBaskets: [hexAddress] }
-    });
-    return reply.toHuman();
-  } catch (err) {
-    log("⚠️ Could not fetch user baskets:", err.message);
-    return [];
   }
 }
 
@@ -294,13 +296,12 @@ async function loop() {
 
       log("🔄 Starting autonomous cycle...");
       
-      const success = await createAutonomousBasket();
+      const result = await createAutonomousBasket();
       
-      if (success) {
-        log("⏳ Waiting for state update...");
-        await wait(10000);
-        const baskets = await getUserBaskets();
-        const basketId = baskets[baskets.length - 1];
+      if (result) {
+        // If result is a string, it's the basketId from events
+        // If it's true, we might still need to find it (but event listening should have caught it)
+        let basketId = typeof result === 'string' ? result : null;
         
         if (basketId) {
           log(`🎯 Target Basket ID: ${basketId}`);
@@ -308,6 +309,8 @@ async function loop() {
           if (quote) {
             await placeBet(basketId, quote);
           }
+        } else {
+          log("⚠️ Basket created but ID not captured from events. Skipping bet this round.");
         }
       }
 
