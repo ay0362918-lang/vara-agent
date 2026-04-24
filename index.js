@@ -207,30 +207,58 @@ async function createAutonomousBasket() {
     return new Promise((resolve) => {
       let settled = false;
       let basketIdCaptured = null;
+      let unsub = null;
+      let replyTimeout = null;
 
       const finish = (value) => {
-        if (!settled) {
-          settled = true;
-          resolve(value);
+        if (settled) return;
+        settled = true;
+
+        if (replyTimeout) {
+          clearTimeout(replyTimeout);
+          replyTimeout = null;
         }
+
+        try {
+          if (typeof unsub === "function") {
+            unsub();
+          }
+        } catch (_) {}
+
+        resolve(value);
       };
+
+      // Listen for program reply sent back to this user
+      unsub = api.gearEvents.subscribeToGearEvent("UserMessageSent", ({ data }) => {
+        try {
+          const message = data.message;
+          if (!message) return;
+
+          const source = message.source?.toHex?.();
+          const destination = message.destination?.toHex?.();
+          const payloadHex = message.payload?.toHex?.();
+
+          if (
+            source === BASKET_MARKET &&
+            destination === hexAddress &&
+            payloadHex &&
+            payloadHex !== "0x"
+          ) {
+            log(`🎯 Extracted Basket ID from Reply Event: ${payloadHex}`);
+            basketIdCaptured = payloadHex;
+            finish(payloadHex);
+          }
+        } catch (err) {
+          log("⚠️ Reply event parse error:", err.message);
+        }
+      });
 
       tx.signAndSend(account, ({ status, events }) => {
         for (const { event } of events) {
-          if (event.section === "gear" && event.method === "UserMessageSent") {
-            // UserMessageSent data = [message, expiration]
-            const message = event.data[0];
-
-            if (!message) continue;
-
-            const source = message.source?.toHex?.();
-            const payloadHex = message.payload?.toHex?.();
-
-            if (source === BASKET_MARKET && payloadHex && payloadHex !== "0x") {
-              log(`🎯 Extracted Basket ID from Event: ${payloadHex}`);
-              basketIdCaptured = payloadHex;
-              finish(payloadHex);
-              return;
+          if (event.section === "gear" && event.method === "MessageQueued") {
+            const messageId = event.data[0]?.toHex?.();
+            if (messageId) {
+              log(`📨 CreateBasket message queued: ${messageId}`);
             }
           }
 
@@ -241,11 +269,23 @@ async function createAutonomousBasket() {
           }
         }
 
+        if (status.isInBlock) {
+          log("📥 Basket creation in block");
+        }
+
         if (status.isFinalized) {
           log("✅ Basket creation finalized");
-          if (!basketIdCaptured) {
-            finish(null);
+
+          if (basketIdCaptured) {
+            finish(basketIdCaptured);
+            return;
           }
+
+          // Give the separate Gear reply event a little time to arrive
+          replyTimeout = setTimeout(() => {
+            log("⚠️ No basket ID reply received after finalization");
+            finish(null);
+          }, 15000);
         }
       }).catch((err) => {
         log("❌ signAndSend error:", err.message);
