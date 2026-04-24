@@ -7,7 +7,7 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("🔥 POLYBASKETS SEASON 2 AGENT V3 STARTING...");
+console.log("🔥 POLYBASKETS SEASON 2 AUTONOMOUS AGENT STARTING...");
 
 // --- CONFIG ---
 const RPC = "wss://rpc.vara.network";
@@ -17,9 +17,10 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const BET_QUOTE_URL = "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote";
+const POLYMARKET_API = "https://gamma-api.polymarket.com/markets";
 
 const BET_AMOUNT = "10000000000000"; // 10 CHIP
-const AGENT_NAME = process.env.AGENT_NAME || "hy4";
+const AGENT_NAME = process.env.AGENT_NAME || "autonomous-agent";
 
 // --- STATE ---
 let api;
@@ -41,8 +42,8 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // Force the correct 66-char hex address for this specific wallet
-  hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
+  // Get the hex address from the account
+  hexAddress = u8aToHex(decodeAddress(account.address));
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -89,16 +90,15 @@ async function registerAgent() {
     log("📝 Registering agent name on-chain...");
     const payload = { RegisterAgent: [AGENT_NAME] };
     
-    // Use the correct syntax for vouchers in @gear-js/api
     const tx = await api.message.send({
       destination: BASKET_MARKET,
       payload,
       gasLimit: 2_000_000_000,
-      prepaidVoucher: voucherId // Correct way to attach voucher
+      prepaidVoucher: voucherId
     });
 
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status }) => {
+      tx.signAndSend(account, ({ status, events }) => {
         if (status.isInBlock) log("📥 Registration in block");
         if (status.isFinalized) {
             log("✅ Registration finalized");
@@ -137,9 +137,116 @@ async function claimCHIP() {
   }
 }
 
+async function fetchMarkets() {
+  try {
+    log("🔍 Fetching active Polymarket markets...");
+    const now = new Date().toISOString();
+    const res = await fetch(`${POLYMARKET_API}?closed=false&order=volume24hr&ascending=false&end_date_min=${now}&limit=10`);
+    const markets = await res.json();
+    
+    return markets.map(m => ({
+      poly_market_id: String(m.id),
+      poly_slug: m.slug,
+      question: m.question,
+      prices: JSON.parse(m.outcomePrices)
+    })).filter(m => m.prices && m.prices.length >= 2);
+  } catch (err) {
+    log("❌ Market fetch error:", err.message);
+    return [];
+  }
+}
+
+async function createAutonomousBasket() {
+  if (!voucherId) return null;
+  try {
+    const markets = await fetchMarkets();
+    if (markets.length < 2) {
+      log("⚠️ Not enough active markets found");
+      return null;
+    }
+
+    // Pick 2 random markets for the basket
+    const selected = [];
+    const usedIndices = new Set();
+    while (selected.length < 2) {
+      const idx = Math.floor(Math.random() * markets.length);
+      if (!usedIndices.has(idx)) {
+        selected.push(markets[idx]);
+        usedIndices.add(idx);
+      }
+    }
+
+    log(`🏗️ Creating basket with: ${selected.map(m => m.poly_slug).join(", ")}`);
+
+    const items = selected.map(m => ({
+      poly_market_id: m.poly_market_id,
+      poly_slug: m.poly_slug,
+      weight_bps: 5000, // 50% each
+      selected_outcome: "YES"
+    }));
+
+    const basketName = `Auto-${Math.random().toString(36).substring(7)}`;
+    const payload = {
+      CreateBasket: [
+        basketName,
+        "Autonomous basket created by Season 2 Agent",
+        items,
+        "Bet" // Use CHIP lane
+      ]
+    };
+
+    const tx = await api.message.send({
+      destination: BASKET_MARKET,
+      payload,
+      gasLimit: 10_000_000_000,
+      prepaidVoucher: voucherId
+    });
+
+    return new Promise((resolve) => {
+      tx.signAndSend(account, ({ status, events }) => {
+        if (status.isFinalized) {
+          // Find the basket ID from events
+          for (const { event } of events) {
+            if (event.method === 'UserMessageSent') {
+              // In Gear, the reply usually contains the result.
+              // For simplicity in this script, we'll wait for the next block and query the last basket.
+              log("✅ Basket creation transaction finalized");
+              resolve(true);
+            }
+          }
+          resolve(true);
+        }
+      });
+    });
+  } catch (err) {
+    log("❌ Basket creation error:", err.message);
+    return null;
+  }
+}
+
+async function getLastBasketId() {
+  try {
+    // Query the contract for the user's baskets
+    // This is a simplified way to get the latest basket ID created by the user
+    const payload = { GetUserBaskets: [hexAddress] };
+    const reply = await api.program.read({
+      programId: BASKET_MARKET,
+      payload
+    }, api.code.get(BASKET_MARKET));
+    
+    const baskets = reply.toHuman();
+    if (Array.isArray(baskets) && baskets.length > 0) {
+      return baskets[baskets.length - 1];
+    }
+  } catch (err) {
+    log("⚠️ Could not fetch user baskets:", err.message);
+  }
+  return null;
+}
+
 async function getQuote(basketId) {
   try {
-    log("📊 Getting quote for:", basketId);
+    log("📊 Getting quote for basket:", basketId);
     const res = await fetch(BET_QUOTE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -164,7 +271,7 @@ async function getQuote(basketId) {
 async function placeBet(basketId, quote) {
   if (!voucherId) return;
   try {
-    log("💰 Placing bet on:", basketId);
+    log("💰 Placing bet on basket:", basketId);
     const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
     const tx = await api.message.send({
       destination: BET_LANE,
@@ -187,46 +294,51 @@ async function placeBet(basketId, quote) {
 }
 
 async function loop() {
-  log("🚀 LOOP STARTED");
+  log("🚀 AUTONOMOUS LOOP STARTED");
   
+  await init();
   await ensureVoucher();
   await registerAgent();
   await claimCHIP();
-
-  // Updated Basket IDs for Season 2
-  const LIVE_BASKETS = [
-    "cm5-no-boe", "cm5-no-maduro", "cm5-no-gemini", 
-    "cm5-no-jdg", "cm5-no-claude5", "cm5-no-marlins"
-  ];
 
   while (true) {
     try {
       await ensureVoucher();
       await claimCHIP();
 
-      const basketId = LIVE_BASKETS[Math.floor(Math.random() * LIVE_BASKETS.length)];
-      const quote = await getQuote(basketId);
-
-      if (quote) {
-        await placeBet(basketId, quote);
+      log("🔄 Starting autonomous cycle...");
+      
+      // 1. Create a new basket
+      const created = await createAutonomousBasket();
+      if (created) {
+        // Wait a bit for indexer/state to catch up
+        await wait(5000);
+        
+        // 2. Get the ID of the basket we just created
+        const basketId = await getLastBasketId();
+        
+        if (basketId) {
+          log(`🎯 Target Basket ID: ${basketId}`);
+          
+          // 3. Get quote and place bet
+          const quote = await getQuote(basketId);
+          if (quote) {
+            await placeBet(basketId, quote);
+          }
+        }
       }
 
-      log("😴 Waiting for next round...");
-      await wait(60000); 
+      log("😴 Waiting 5 minutes for next cycle...");
+      await wait(300000); 
 
     } catch (err) {
       log("💥 Loop error:", err.message);
-      await wait(10000);
+      await wait(30000);
     }
   }
 }
 
-async function main() {
-  await init();
-  await loop();
-}
-
-main().catch((err) => {
+loop().catch((err) => {
   console.error("💥 Fatal:", err);
   process.exit(1);
 });
