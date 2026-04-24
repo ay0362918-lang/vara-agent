@@ -7,7 +7,7 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("🔥 POLYBASKETS SEASON 2 AGENT STARTING...");
+console.log("🔥 POLYBASKETS SEASON 2 AGENT STARTING (FIXED)...");
 
 // --- CONFIG ---
 const RPC = "wss://rpc.vara.network";
@@ -18,8 +18,8 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const BET_QUOTE_URL = "https://bet-quote-service-production.up.railway.app/api/bet-lane/quote";
 
-const BET_AMOUNT = "100000000000000"; // 100 CHIP
-const AGENT_NAME = process.env.AGENT_NAME || "my-competitive-agent";
+const BET_AMOUNT = "10000000000000"; // 10 CHIP (Standard bet)
+const AGENT_NAME = process.env.AGENT_NAME || "hy4";
 
 // --- STATE ---
 let api;
@@ -41,7 +41,6 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // 🔥 FIX: Correctly decode SS58 to Uint8Array then to Hex
   const decoded = decodeAddress(account.address);
   hexAddress = u8aToHex(decoded);
   
@@ -85,38 +84,65 @@ async function ensureVoucher() {
 }
 
 async function registerAgent() {
+  if (!voucherId) return;
   try {
-    log("📝 Checking agent registration...");
-    log(`🚀 Registering as: ${AGENT_NAME}`);
+    log("📝 Registering agent name on-chain...");
+    log(`🚀 Name: ${AGENT_NAME}`);
     
     const payload = { RegisterAgent: [AGENT_NAME] };
-    const tx = await api.message.send({
+    const gas = await api.program.calculateGas.handle(
+        account.address,
+        BASKET_MARKET,
+        payload,
+        0,
+        true
+    );
+
+    const tx = api.message.send({
       destination: BASKET_MARKET,
       payload,
-      gasLimit: 2_000_000_000,
+      gasLimit: gas.min_limit,
     });
 
+    // 🔥 CRITICAL: Attach the voucher
+    tx.withVoucher(voucherId);
+
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status }) => {
+      tx.signAndSend(account, ({ status, events }) => {
         if (status.isInBlock) log("📥 Registration in block");
-        if (status.isFinalized) resolve();
+        if (status.isFinalized) {
+            log("✅ Registration finalized");
+            resolve();
+        }
       });
-    }).catch(e => log("ℹ️ Registration note:", e.message));
+    });
     
   } catch (err) {
-    log("ℹ️ Registration check:", err.message);
+    log("ℹ️ Registration note (might already be registered):", err.message);
   }
 }
 
 async function claimCHIP() {
+  if (!voucherId) return;
   try {
     log("🪙 Claiming hourly CHIP...");
     const payload = { Claim: [] };
-    const tx = await api.message.send({
+    
+    const gas = await api.program.calculateGas.handle(
+        account.address,
+        BET_TOKEN,
+        payload,
+        0,
+        true
+    );
+
+    const tx = api.message.send({
       destination: BET_TOKEN,
       payload,
-      gasLimit: 2_000_000_000,
+      gasLimit: gas.min_limit,
     });
+
+    tx.withVoucher(voucherId);
 
     await new Promise((resolve) => {
       tx.signAndSend(account, ({ status }) => {
@@ -156,19 +182,33 @@ async function getQuote(basketId) {
 }
 
 async function placeBet(basketId, quote) {
+  if (!voucherId) return;
   try {
     log("💰 Placing bet on:", basketId);
     const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
-    const tx = await api.message.send({
+    
+    const gas = await api.program.calculateGas.handle(
+        account.address,
+        BET_LANE,
+        payload,
+        0,
+        true
+    );
+
+    const tx = api.message.send({
       destination: BET_LANE,
       payload,
-      gasLimit: 20_000_000_000,
+      gasLimit: gas.min_limit,
     });
+
+    tx.withVoucher(voucherId);
 
     await new Promise((resolve) => {
       tx.signAndSend(account, ({ status }) => {
-        log("📡 Status:", status.toString());
-        if (status.isFinalized) resolve();
+        if (status.isFinalized) {
+            log("✅ Bet placed successfully");
+            resolve();
+        }
       });
     });
   } catch (err) {
