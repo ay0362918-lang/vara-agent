@@ -41,8 +41,9 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // 🔥 FIX: Convert SS58 address to Hex for Quote Service
-  hexAddress = u8aToHex(decodeAddress(account.address));
+  // 🔥 FIX: Correctly decode SS58 to Uint8Array then to Hex
+  const decoded = decodeAddress(account.address);
+  hexAddress = u8aToHex(decoded);
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -137,7 +138,7 @@ async function getQuote(basketId) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user: hexAddress, // 🔥 Use Hex Address here
+        user: hexAddress,
         basketId: basketId,
         amount: BET_AMOUNT,
         targetProgramId: BET_LANE,
