@@ -143,6 +143,8 @@ async function fetchMarkets() {
     const now = new Date();
     const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
     const res = await fetch(`${POLYMARKET_API}?closed=false&order=volume24hr&ascending=false&end_date_min=${oneHourLater.toISOString()}&limit=10`);
+    
+    if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
     const markets = await res.json();
     
     return markets.map(m => ({
@@ -206,11 +208,11 @@ async function createAutonomousBasket() {
       let basketIdCaptured = null;
 
       tx.signAndSend(account, ({ status, events }) => {
-        // Search for the event in both isInBlock and isFinalized
+        // Debug: Log event types to see what's happening
         events.forEach(({ event }) => {
-          if (api.events.gear.UserMessageSent.is(event)) {
+          // Check for any message sent from the basket contract
+          if (event.section === 'gear' && event.method === 'UserMessageSent') {
             const { message } = event.data;
-            // The message source is the contract that sent the reply
             if (message.source.toHex() === BASKET_MARKET) {
               const basketId = message.payload.toHex();
               log(`🎯 Extracted Basket ID from Event: ${basketId}`);
@@ -218,12 +220,17 @@ async function createAutonomousBasket() {
               resolve(basketId);
             }
           }
+          // Also check for MessagesDispatched which sometimes contains the result
+          if (event.section === 'gear' && event.method === 'MessagesDispatched') {
+             // If we already captured it, no need to check further
+             if (basketIdCaptured) return;
+          }
         });
 
         if (status.isFinalized) {
           log("✅ Basket creation finalized");
           if (!basketIdCaptured) {
-            resolve(true); // Success, but ID wasn't in events (unlikely with this fix)
+            resolve(true); 
           }
         }
       });
@@ -286,6 +293,7 @@ async function placeBet(basketId, quote) {
 async function loop() {
   log("🚀 LOOP STARTED");
   
+  await init();
   await ensureVoucher();
   await registerAgent();
   await claimCHIP();
