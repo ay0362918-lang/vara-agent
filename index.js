@@ -197,8 +197,6 @@ async function createAutonomousBasket() {
 
     const basketName = `Auto-${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`.slice(0, 128);
     const description = "Autonomous basket created by Season 2 Agent".slice(0, 512);
-
-    const walletAccount = process.env.VARA_WALLET_ACCOUNT || "agent";
     const home = process.env.HOME || process.env.USERPROFILE || "";
 
     const idlCandidates = [
@@ -218,6 +216,15 @@ async function createAutonomousBasket() {
       return null;
     }
 
+    if (!process.env.PRIVATE_KEY) {
+      log("❌ Basket creation error: PRIVATE_KEY missing");
+      return null;
+    }
+
+    const signerArgs = process.env.PRIVATE_KEY.trim().includes(" ")
+      ? ["--mnemonic", process.env.PRIVATE_KEY.trim()]
+      : ["--seed", process.env.PRIVATE_KEY.trim()];
+
     const argsJson = JSON.stringify([
       basketName,
       description,
@@ -232,8 +239,7 @@ async function createAutonomousBasket() {
     const { stdout, stderr } = await execFileAsync(
       "vara-wallet",
       [
-        "--account",
-        walletAccount,
+        ...signerArgs,
         "call",
         BASKET_MARKET,
         "BasketMarket/CreateBasket",
@@ -288,6 +294,7 @@ async function createAutonomousBasket() {
 }
 
 
+
 async function getQuote(basketId) {
   try {
     log("📊 Getting quote for:", basketId);
@@ -322,8 +329,6 @@ async function placeBet(basketId, quote) {
     const { join } = await import("node:path");
 
     const execFileAsync = promisify(execFile);
-
-    const walletAccount = process.env.VARA_WALLET_ACCOUNT || "agent";
     const home = process.env.HOME || process.env.USERPROFILE || "";
 
     const idlCandidates = [
@@ -343,10 +348,19 @@ async function placeBet(basketId, quote) {
       return;
     }
 
+    if (!process.env.PRIVATE_KEY) {
+      log("❌ Bet error: PRIVATE_KEY missing");
+      return;
+    }
+
+    const signerArgs = process.env.PRIVATE_KEY.trim().includes(" ")
+      ? ["--mnemonic", process.env.PRIVATE_KEY.trim()]
+      : ["--seed", process.env.PRIVATE_KEY.trim()];
+
     log("💰 Placing bet on:", basketId);
 
     const argsJson = JSON.stringify([
-      String(basketId),
+      Number(basketId),
       BET_AMOUNT,
       quote
     ]);
@@ -358,8 +372,7 @@ async function placeBet(basketId, quote) {
     const { stdout, stderr } = await execFileAsync(
       "vara-wallet",
       [
-        "--account",
-        walletAccount,
+        ...signerArgs,
         "call",
         BET_LANE,
         "BetLane/PlaceBet",
