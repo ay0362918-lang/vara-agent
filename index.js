@@ -198,7 +198,7 @@ async function createAutonomousBasket() {
     const basketName = `Auto-${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`.slice(0, 128);
     const description = "Autonomous basket created by Season 2 Agent".slice(0, 512);
 
-    const walletAccount = process.env.VARA_WALLET_ACCOUNT || "hy4";
+    const walletAccount = process.env.VARA_WALLET_ACCOUNT || "agent";
     const home = process.env.HOME || process.env.USERPROFILE || "";
 
     const idlCandidates = [
@@ -314,28 +314,86 @@ async function getQuote(basketId) {
 
 async function placeBet(basketId, quote) {
   if (!voucherId) return;
+
   try {
+    const { promisify } = await import("node:util");
+    const { execFile } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const execFileAsync = promisify(execFile);
+
+    const walletAccount = process.env.VARA_WALLET_ACCOUNT || "agent";
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+
+    const idlCandidates = [
+      process.env.BET_LANE_IDL,
+      process.env.POLYBASKETS_SKILLS_DIR
+        ? join(process.env.POLYBASKETS_SKILLS_DIR, "idl", "bet_lane_client.idl")
+        : null,
+      join(process.cwd(), "skills", "idl", "bet_lane_client.idl"),
+      join(home, ".agents", "skills", "polybaskets-skills", "idl", "bet_lane_client.idl")
+    ].filter(Boolean);
+
+    const idlPath = idlCandidates.find((p) => existsSync(p));
+
+    if (!idlPath) {
+      log("❌ Bet error: bet_lane_client.idl not found");
+      log("ℹ️ Looked in:", idlCandidates.join(" | "));
+      return;
+    }
+
     log("💰 Placing bet on:", basketId);
-    const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
-    const tx = await api.message.send({
-      destination: BET_LANE,
-      payload,
-      gasLimit: 20_000_000_000,
-      prepaidVoucher: voucherId
+
+    const argsJson = JSON.stringify([
+      String(basketId),
+      BET_AMOUNT,
+      quote
+    ]);
+
+    await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], {
+      maxBuffer: 1024 * 1024
     });
 
-    await new Promise((resolve) => {
-      tx.signAndSend(account, ({ status }) => {
-        if (status.isFinalized) {
-            log("✅ Bet placed successfully");
-            resolve();
-        }
-      });
-    });
+    const { stdout, stderr } = await execFileAsync(
+      "vara-wallet",
+      [
+        "--account",
+        walletAccount,
+        "call",
+        BET_LANE,
+        "BetLane/PlaceBet",
+        "--args",
+        argsJson,
+        "--voucher",
+        voucherId,
+        "--idl",
+        idlPath
+      ],
+      {
+        maxBuffer: 1024 * 1024 * 4
+      }
+    );
+
+    if (stderr && stderr.trim()) {
+      log("ℹ️ vara-wallet:", stderr.trim());
+    }
+
+    log("✅ Bet placed successfully");
+    if (stdout && stdout.trim()) {
+      log("📄 Bet response:", stdout.trim());
+    }
   } catch (err) {
-    log("❌ Bet error:", err.message);
+    const detail =
+      err?.stderr?.trim?.() ||
+      err?.stdout?.trim?.() ||
+      err?.message ||
+      String(err);
+
+    log("❌ Bet error:", detail);
   }
 }
+
 
 async function loop() {
   log("🚀 LOOP STARTED");
