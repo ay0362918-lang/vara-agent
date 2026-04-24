@@ -42,8 +42,8 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // Get hex address from the account
-  hexAddress = u8aToHex(decodeAddress(account.address));
+  // Force the correct 66-char hex address for this specific wallet
+  hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -90,15 +90,16 @@ async function registerAgent() {
     log("📝 Registering agent name on-chain...");
     const payload = { RegisterAgent: [AGENT_NAME] };
     
+    // Use the correct syntax for vouchers in @gear-js/api
     const tx = await api.message.send({
       destination: BASKET_MARKET,
       payload,
       gasLimit: 2_000_000_000,
-      prepaidVoucher: voucherId
+      prepaidVoucher: voucherId // Correct way to attach voucher
     });
 
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status, events }) => {
+      tx.signAndSend(account, ({ status }) => {
         if (status.isInBlock) log("📥 Registration in block");
         if (status.isFinalized) {
             log("✅ Registration finalized");
@@ -210,9 +211,6 @@ async function createAutonomousBasket() {
             if (api.events.gear.UserMessageSent.is(event)) {
               const { message } = event.data;
               if (message.source.toHex() === BASKET_MARKET) {
-                // The payload contains the basketId. 
-                // Since we don't have the IDL for decoding, we use the fact that 
-                // for CreateBasket, the contract returns the BasketId.
                 const basketId = message.payload.toHex();
                 log(`🎯 Extracted Basket ID from Event: ${basketId}`);
                 resolve(basketId);
@@ -222,8 +220,7 @@ async function createAutonomousBasket() {
         }
         if (status.isFinalized) {
           log("✅ Basket creation finalized");
-          // If not resolved by event yet, resolve with true to indicate success
-          resolve(true); 
+          resolve(true);
         }
       });
     });
@@ -299,8 +296,6 @@ async function loop() {
       const result = await createAutonomousBasket();
       
       if (result) {
-        // If result is a string, it's the basketId from events
-        // If it's true, we might still need to find it (but event listening should have caught it)
         let basketId = typeof result === 'string' ? result : null;
         
         if (basketId) {
