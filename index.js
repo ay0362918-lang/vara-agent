@@ -298,19 +298,34 @@ async function createAutonomousBasket() {
 async function getQuote(basketId) {
   try {
     log("📊 Getting quote for:", basketId);
+
+    const numericBasketId = Number(basketId);
+    if (!Number.isFinite(numericBasketId)) {
+      throw new Error(`Invalid numeric basketId: ${basketId}`);
+    }
+
+    // Small delay so backend/indexer can see the newly created basket
+    await wait(2000);
+
+    const body = {
+      user: hexAddress,
+      basketId: numericBasketId,
+      amount: BET_AMOUNT,
+      targetProgramId: BET_LANE,
+    };
+
     const res = await fetch(BET_QUOTE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user: hexAddress,
-        basketId: basketId,
-        amount: BET_AMOUNT,
-        targetProgramId: BET_LANE,
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await res.json();
-    if (!data || data.error) throw new Error(data.error || "No quote");
+
+    if (!res.ok || !data || data.error) {
+      throw new Error(data?.error || `HTTP ${res.status}`);
+    }
+
     log("✅ Quote received");
     return data;
   } catch (err) {
