@@ -7,7 +7,7 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("🔥 POLYBASKETS SEASON 2 AUTONOMOUS AGENT STARTING...");
+console.log("🔥 POLYBASKETS SEASON 2 AGENT V3 STARTING...");
 
 // --- CONFIG ---
 const RPC = "wss://rpc.vara.network";
@@ -20,7 +20,7 @@ const BET_QUOTE_URL = "https://bet-quote-service-production.up.railway.app/api/b
 const POLYMARKET_API = "https://gamma-api.polymarket.com/markets";
 
 const BET_AMOUNT = "10000000000000"; // 10 CHIP
-const AGENT_NAME = process.env.AGENT_NAME || "autonomous-agent";
+const AGENT_NAME = process.env.AGENT_NAME || "hy4";
 
 // --- STATE ---
 let api;
@@ -42,9 +42,8 @@ async function init() {
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
   
-  // Correctly derive the hex address from the account.address
-  // Use account.addressHrx for the hex representation of the address
-  hexAddress = account.addressHrx;
+  // Force the correct 66-char hex address for this specific wallet
+  hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
   
   log("✅ Connected:", account.address);
   log("🆔 Hex Address:", hexAddress);
@@ -89,19 +88,18 @@ async function registerAgent() {
   if (!voucherId) return;
   try {
     log("📝 Registering agent name on-chain...");
-    // Add a random suffix to AGENT_NAME to ensure uniqueness
-    const uniqueAgentName = `${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`;
-    const payload = { RegisterAgent: [uniqueAgentName] };
+    const payload = { RegisterAgent: [AGENT_NAME] };
     
+    // Use the correct syntax for vouchers in @gear-js/api
     const tx = await api.message.send({
       destination: BASKET_MARKET,
       payload,
       gasLimit: 2_000_000_000,
-      prepaidVoucher: voucherId
+      prepaidVoucher: voucherId // Correct way to attach voucher
     });
 
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status, events }) => {
+      tx.signAndSend(account, ({ status }) => {
         if (status.isInBlock) log("📥 Registration in block");
         if (status.isFinalized) {
             log("✅ Registration finalized");
@@ -144,7 +142,6 @@ async function fetchMarkets() {
   try {
     log("🔍 Fetching active Polymarket markets...");
     const now = new Date();
-    // Filter for markets ending at least 1 hour from now to ensure they are active enough
     const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
     const res = await fetch(`${POLYMARKET_API}?closed=false&order=volume24hr&ascending=false&end_date_min=${oneHourLater.toISOString()}&limit=10`);
     const markets = await res.json();
@@ -170,7 +167,6 @@ async function createAutonomousBasket() {
       return null;
     }
 
-    // Pick 2 random markets for the basket
     const selected = [];
     const usedIndices = new Set();
     while (selected.length < 2) {
@@ -186,8 +182,8 @@ async function createAutonomousBasket() {
     const items = selected.map(m => ({
       poly_market_id: m.poly_market_id,
       poly_slug: m.poly_slug,
-      weight_bps: 5000, // 50% each
-      selected_outcome: Math.random() > 0.5 ? "YES" : "NO" // Randomly select YES or NO
+      weight_bps: 5000,
+      selected_outcome: Math.random() > 0.5 ? "YES" : "NO"
     }));
 
     const basketName = `Auto-${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`;
@@ -196,7 +192,7 @@ async function createAutonomousBasket() {
         basketName,
         "Autonomous basket created by Season 2 Agent",
         items,
-        "Bet" // Use CHIP lane
+        "Bet"
       ]
     };
 
@@ -208,19 +204,10 @@ async function createAutonomousBasket() {
     });
 
     return new Promise((resolve) => {
-      tx.signAndSend(account, ({ status, events }) => {
+      tx.signAndSend(account, ({ status }) => {
         if (status.isFinalized) {
-          log("✅ Basket creation transaction finalized");
-          // Extract the basket ID from the events
-          const basketCreatedEvent = events.find(e => e.event.method === 'BasketCreated');
-          if (basketCreatedEvent) {
-            const basketId = basketCreatedEvent.event.data.basketId.toString();
-            log(`🎉 Created Basket ID: ${basketId}`);
-            resolve(basketId);
-          } else {
-            log("⚠️ BasketCreated event not found after transaction finalized.");
-            resolve(null);
-          }
+          log("✅ Basket creation finalized");
+          resolve(true);
         }
       });
     });
@@ -230,9 +217,22 @@ async function createAutonomousBasket() {
   }
 }
 
+async function getUserBaskets() {
+  try {
+    const reply = await api.program.read({
+      programId: BASKET_MARKET,
+      payload: { GetUserBaskets: [hexAddress] }
+    });
+    return reply.toHuman();
+  } catch (err) {
+    log("⚠️ Could not fetch user baskets:", err.message);
+    return [];
+  }
+}
+
 async function getQuote(basketId) {
   try {
-    log("📊 Getting quote for basket:", basketId);
+    log("📊 Getting quote for:", basketId);
     const res = await fetch(BET_QUOTE_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -257,7 +257,7 @@ async function getQuote(basketId) {
 async function placeBet(basketId, quote) {
   if (!voucherId) return;
   try {
-    log("💰 Placing bet on basket:", basketId);
+    log("💰 Placing bet on:", basketId);
     const payload = { PlaceBet: [basketId, BET_AMOUNT, quote] };
     const tx = await api.message.send({
       destination: BET_LANE,
@@ -280,9 +280,8 @@ async function placeBet(basketId, quote) {
 }
 
 async function loop() {
-  log("🚀 AUTONOMOUS LOOP STARTED");
+  log("🚀 LOOP STARTED");
   
-  await init();
   await ensureVoucher();
   await registerAgent();
   await claimCHIP();
@@ -294,28 +293,39 @@ async function loop() {
 
       log("🔄 Starting autonomous cycle...");
       
-      // 1. Create a new basket
-      const basketId = await createAutonomousBasket();
+      const success = await createAutonomousBasket();
       
-      if (basketId) {
-        // 2. Get quote and place bet
-        const quote = await getQuote(basketId);
-        if (quote) {
-          await placeBet(basketId, quote);
+      if (success) {
+        log("⏳ Waiting for state update...");
+        await wait(10000);
+        const baskets = await getUserBaskets();
+        const basketId = baskets[baskets.length - 1];
+        
+        if (basketId) {
+          log(`🎯 Target Basket ID: ${basketId}`);
+          const quote = await getQuote(basketId);
+          if (quote) {
+            await placeBet(basketId, quote);
+          }
         }
       }
 
-      log("😴 Waiting 5 minutes for next cycle...");
-      await wait(300000); 
+      log("😴 Waiting for next round...");
+      await wait(60000); 
 
     } catch (err) {
       log("💥 Loop error:", err.message);
-      await wait(30000);
+      await wait(10000);
     }
   }
 }
 
-loop().catch((err) => {
+async function main() {
+  await init();
+  await loop();
+}
+
+main().catch((err) => {
   console.error("💥 Fatal:", err);
   process.exit(1);
 });
