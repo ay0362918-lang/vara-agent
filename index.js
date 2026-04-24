@@ -90,12 +90,11 @@ async function registerAgent() {
     log("📝 Registering agent name on-chain...");
     const payload = { RegisterAgent: [AGENT_NAME] };
     
-    // Use the correct syntax for vouchers in @gear-js/api
     const tx = await api.message.send({
       destination: BASKET_MARKET,
       payload,
       gasLimit: 2_000_000_000,
-      prepaidVoucher: voucherId // Correct way to attach voucher
+      prepaidVoucher: voucherId
     });
 
     await new Promise((resolve, reject) => {
@@ -204,23 +203,28 @@ async function createAutonomousBasket() {
     });
 
     return new Promise((resolve) => {
+      let basketIdCaptured = null;
+
       tx.signAndSend(account, ({ status, events }) => {
-        if (status.isInBlock) {
-          // Look for UserMessageSent event to extract the basketId from payload
-          events.forEach(({ event }) => {
-            if (api.events.gear.UserMessageSent.is(event)) {
-              const { message } = event.data;
-              if (message.source.toHex() === BASKET_MARKET) {
-                const basketId = message.payload.toHex();
-                log(`🎯 Extracted Basket ID from Event: ${basketId}`);
-                resolve(basketId);
-              }
+        // Search for the event in both isInBlock and isFinalized
+        events.forEach(({ event }) => {
+          if (api.events.gear.UserMessageSent.is(event)) {
+            const { message } = event.data;
+            // The message source is the contract that sent the reply
+            if (message.source.toHex() === BASKET_MARKET) {
+              const basketId = message.payload.toHex();
+              log(`🎯 Extracted Basket ID from Event: ${basketId}`);
+              basketIdCaptured = basketId;
+              resolve(basketId);
             }
-          });
-        }
+          }
+        });
+
         if (status.isFinalized) {
           log("✅ Basket creation finalized");
-          resolve(true);
+          if (!basketIdCaptured) {
+            resolve(true); // Success, but ID wasn't in events (unlikely with this fix)
+          }
         }
       });
     });
