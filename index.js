@@ -1,5 +1,6 @@
-import { GearApi } from "@gear-js/api";
+import { GearApi, decodeAddress } from "@gear-js/api";
 import { Keyring } from "@polkadot/keyring";
+import { u8aToHex } from "@polkadot/util";
 import { setTimeout as wait } from "timers/promises";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
@@ -23,6 +24,7 @@ const AGENT_NAME = process.env.AGENT_NAME || "my-competitive-agent";
 // --- STATE ---
 let api;
 let account;
+let hexAddress;
 let voucherId;
 
 function log(...args) {
@@ -38,13 +40,18 @@ async function init() {
     throw new Error("PRIVATE_KEY missing in .env");
   }
   account = keyring.addFromUri(process.env.PRIVATE_KEY);
+  
+  // 🔥 FIX: Convert SS58 address to Hex for Quote Service
+  hexAddress = u8aToHex(decodeAddress(account.address));
+  
   log("✅ Connected:", account.address);
+  log("🆔 Hex Address:", hexAddress);
 }
 
 async function ensureVoucher() {
   try {
     log("🎫 Checking voucher status...");
-    const res = await fetch(`${VOUCHER_URL}/${account.address}`);
+    const res = await fetch(`${VOUCHER_URL}/${hexAddress}`);
     const data = await res.json();
 
     if (data.voucherId && data.canTopUpNow === false) {
@@ -58,7 +65,7 @@ async function ensureVoucher() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        account: account.address,
+        account: hexAddress,
         programs: [BASKET_MARKET, BET_TOKEN, BET_LANE]
       })
     });
@@ -79,9 +86,6 @@ async function ensureVoucher() {
 async function registerAgent() {
   try {
     log("📝 Checking agent registration...");
-    // In a real implementation, we'd query the contract first. 
-    // For this script, we'll try to register and catch "AlreadyRegistered" if it exists.
-    // This matches the STARTER_PROMPT logic.
     log(`🚀 Registering as: ${AGENT_NAME}`);
     
     const payload = { RegisterAgent: [AGENT_NAME] };
@@ -92,7 +96,7 @@ async function registerAgent() {
     });
 
     await new Promise((resolve, reject) => {
-      tx.signAndSend(account, ({ status, events }) => {
+      tx.signAndSend(account, ({ status }) => {
         if (status.isInBlock) log("📥 Registration in block");
         if (status.isFinalized) resolve();
       });
@@ -133,7 +137,7 @@ async function getQuote(basketId) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user: account.address,
+        user: hexAddress, // 🔥 Use Hex Address here
         basketId: basketId,
         amount: BET_AMOUNT,
         targetProgramId: BET_LANE,
@@ -174,7 +178,6 @@ async function placeBet(basketId, quote) {
 async function loop() {
   log("🚀 LOOP STARTED");
   
-  // Initial setup
   await ensureVoucher();
   await registerAgent();
   await claimCHIP();
@@ -186,12 +189,9 @@ async function loop() {
 
   while (true) {
     try {
-      // 1. Every hour (approx), try to claim and top up voucher
-      // (Simplified: just check every loop, the backend handles the 1h window)
       await ensureVoucher();
       await claimCHIP();
 
-      // 2. Pick a basket and bet
       const basketId = LIVE_BASKETS[Math.floor(Math.random() * LIVE_BASKETS.length)];
       const quote = await getQuote(basketId);
 
@@ -200,7 +200,7 @@ async function loop() {
       }
 
       log("😴 Waiting for next round...");
-      await wait(60000); // Wait 1 minute between bets to keep activity high but sustainable
+      await wait(60000); 
 
     } catch (err) {
       log("💥 Loop error:", err.message);
