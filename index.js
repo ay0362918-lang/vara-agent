@@ -161,7 +161,15 @@ async function fetchMarkets() {
 
 async function createAutonomousBasket() {
   if (!voucherId) return null;
+
   try {
+    const { promisify } = await import("node:util");
+    const { execFile } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const execFileAsync = promisify(execFile);
+
     const markets = await fetchMarkets();
     if (markets.length < 2) {
       log("⚠️ Not enough active markets found to create a basket");
@@ -181,122 +189,104 @@ async function createAutonomousBasket() {
     log(`🏗️ Creating basket with: ${selected.map(m => m.poly_slug).join(", ")}`);
 
     const items = selected.map(m => ({
-      poly_market_id: m.poly_market_id,
-      poly_slug: m.poly_slug,
+      poly_market_id: String(m.poly_market_id),
+      poly_slug: String(m.poly_slug).slice(0, 128),
       weight_bps: 5000,
       selected_outcome: Math.random() > 0.5 ? "YES" : "NO"
     }));
 
-    const basketName = `Auto-${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`;
-    const payload = {
-      CreateBasket: [
-        basketName,
-        "Autonomous basket created by Season 2 Agent",
-        items,
-        "Bet"
-      ]
-    };
+    const basketName = `Auto-${AGENT_NAME}-${Math.random().toString(36).substring(2, 7)}`.slice(0, 128);
+    const description = "Autonomous basket created by Season 2 Agent".slice(0, 512);
 
-    const tx = await api.message.send({
-      destination: BASKET_MARKET,
-      payload,
-      gasLimit: 10_000_000_000,
-      prepaidVoucher: voucherId
+    const walletAccount = process.env.VARA_WALLET_ACCOUNT || "hy4";
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+
+    const idlCandidates = [
+      process.env.POLYBASKETS_IDL,
+      process.env.POLYBASKETS_SKILLS_DIR
+        ? join(process.env.POLYBASKETS_SKILLS_DIR, "idl", "polymarket-mirror.idl")
+        : null,
+      join(process.cwd(), "skills", "idl", "polymarket-mirror.idl"),
+      join(home, ".agents", "skills", "polybaskets-skills", "idl", "polymarket-mirror.idl")
+    ].filter(Boolean);
+
+    const idlPath = idlCandidates.find((p) => existsSync(p));
+
+    if (!idlPath) {
+      log("❌ Basket creation error: polymarket-mirror.idl not found");
+      log("ℹ️ Looked in:", idlCandidates.join(" | "));
+      return null;
+    }
+
+    const argsJson = JSON.stringify([
+      basketName,
+      description,
+      items,
+      "Bet"
+    ]);
+
+    await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], {
+      maxBuffer: 1024 * 1024
     });
 
-    return new Promise((resolve) => {
-      let settled = false;
-      let basketIdCaptured = null;
-      let unsub = null;
-      let replyTimeout = null;
+    const { stdout, stderr } = await execFileAsync(
+      "vara-wallet",
+      [
+        "--account",
+        walletAccount,
+        "call",
+        BASKET_MARKET,
+        "BasketMarket/CreateBasket",
+        "--voucher",
+        voucherId,
+        "--args",
+        argsJson,
+        "--idl",
+        idlPath
+      ],
+      {
+        maxBuffer: 1024 * 1024 * 4
+      }
+    );
 
-      const finish = (value) => {
-        if (settled) return;
-        settled = true;
+    if (stderr && stderr.trim()) {
+      log("ℹ️ vara-wallet:", stderr.trim());
+    }
 
-        if (replyTimeout) {
-          clearTimeout(replyTimeout);
-          replyTimeout = null;
-        }
+    const raw = stdout.trim();
+    let basketId = null;
 
-        try {
-          if (typeof unsub === "function") {
-            unsub();
-          }
-        } catch (_) {}
+    try {
+      const parsed = JSON.parse(raw);
+      basketId = parsed?.result ?? parsed?.ok ?? parsed;
+    } catch {
+      const match = raw.match(/\d+/g);
+      if (match && match.length) {
+        basketId = match[match.length - 1];
+      }
+    }
 
-        resolve(value);
-      };
+    if (basketId === null || basketId === undefined || basketId === "") {
+      log("❌ Basket creation error: unable to parse basket ID");
+      log("📄 Raw output:", raw);
+      return null;
+    }
 
-      // Listen for program reply sent back to this user
-      unsub = api.gearEvents.subscribeToGearEvent("UserMessageSent", ({ data }) => {
-        try {
-          const message = data.message;
-          if (!message) return;
-
-          const source = message.source?.toHex?.();
-          const destination = message.destination?.toHex?.();
-          const payloadHex = message.payload?.toHex?.();
-
-          if (
-            source === BASKET_MARKET &&
-            destination === hexAddress &&
-            payloadHex &&
-            payloadHex !== "0x"
-          ) {
-            log(`🎯 Extracted Basket ID from Reply Event: ${payloadHex}`);
-            basketIdCaptured = payloadHex;
-            finish(payloadHex);
-          }
-        } catch (err) {
-          log("⚠️ Reply event parse error:", err.message);
-        }
-      });
-
-      tx.signAndSend(account, ({ status, events }) => {
-        for (const { event } of events) {
-          if (event.section === "gear" && event.method === "MessageQueued") {
-            const messageId = event.data[0]?.toHex?.();
-            if (messageId) {
-              log(`📨 CreateBasket message queued: ${messageId}`);
-            }
-          }
-
-          if (event.section === "system" && event.method === "ExtrinsicFailed") {
-            log("❌ Basket creation extrinsic failed");
-            finish(null);
-            return;
-          }
-        }
-
-        if (status.isInBlock) {
-          log("📥 Basket creation in block");
-        }
-
-        if (status.isFinalized) {
-          log("✅ Basket creation finalized");
-
-          if (basketIdCaptured) {
-            finish(basketIdCaptured);
-            return;
-          }
-
-          // Give the separate Gear reply event a little time to arrive
-          replyTimeout = setTimeout(() => {
-            log("⚠️ No basket ID reply received after finalization");
-            finish(null);
-          }, 15000);
-        }
-      }).catch((err) => {
-        log("❌ signAndSend error:", err.message);
-        finish(null);
-      });
-    });
+    basketId = String(basketId);
+    log(`🎯 Basket created with ID: ${basketId}`);
+    return basketId;
   } catch (err) {
-    log("❌ Basket creation error:", err.message);
+    const detail =
+      err?.stderr?.trim?.() ||
+      err?.stdout?.trim?.() ||
+      err?.message ||
+      String(err);
+
+    log("❌ Basket creation error:", detail);
     return null;
   }
 }
+
 
 async function getQuote(basketId) {
   try {
