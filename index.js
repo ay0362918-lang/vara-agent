@@ -113,29 +113,108 @@ async function registerAgent() {
 }
 
 async function claimCHIP() {
-  if (!voucherId) return;
+  if (!voucherId) return false;
+
   try {
+    const { promisify } = await import("node:util");
+    const { execFile } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const execFileAsync = promisify(execFile);
+    const home = process.env.HOME || process.env.USERPROFILE || "";
+
+    const idlCandidates = [
+      process.env.BET_TOKEN_IDL,
+      process.env.POLYBASKETS_SKILLS_DIR
+        ? join(process.env.POLYBASKETS_SKILLS_DIR, "idl", "bet_token_client.idl")
+        : null,
+      join(process.cwd(), "skills", "idl", "bet_token_client.idl"),
+      join(home, ".agents", "skills", "polybaskets-skills", "idl", "bet_token_client.idl")
+    ].filter(Boolean);
+
+    const idlPath = idlCandidates.find((p) => existsSync(p));
+
+    if (!idlPath) {
+      log("❌ Claim error: bet_token_client.idl not found");
+      log("ℹ️ Looked in:", idlCandidates.join(" | "));
+      return false;
+    }
+
+    if (!process.env.PRIVATE_KEY) {
+      log("❌ Claim error: PRIVATE_KEY missing");
+      return false;
+    }
+
+    const signerArgs = process.env.PRIVATE_KEY.trim().includes(" ")
+      ? ["--mnemonic", process.env.PRIVATE_KEY.trim()]
+      : ["--seed", process.env.PRIVATE_KEY.trim()];
+
     log("🪙 Claiming hourly CHIP...");
-    const payload = { Claim: [] };
-    const tx = await api.message.send({
-      destination: BET_TOKEN,
-      payload,
-      gasLimit: 2_000_000_000,
-      prepaidVoucher: voucherId
+
+    await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], {
+      maxBuffer: 1024 * 1024
     });
 
-    await new Promise((resolve) => {
-      tx.signAndSend(account, ({ status }) => {
-        if (status.isFinalized) {
-          log("✅ CHIP Claimed");
-          resolve();
-        }
-      });
-    });
+    const { stdout, stderr } = await execFileAsync(
+      "vara-wallet",
+      [
+        ...signerArgs,
+        "call",
+        BET_TOKEN,
+        "BetToken/Claim",
+        "--args",
+        "[]",
+        "--voucher",
+        voucherId,
+        "--idl",
+        idlPath
+      ],
+      {
+        maxBuffer: 1024 * 1024 * 4
+      }
+    );
+
+    if (stderr && stderr.trim()) {
+      log("ℹ️ vara-wallet:", stderr.trim());
+    }
+
+    const raw = stdout.trim();
+    let parsed = null;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      log("❌ Claim error: unable to parse claim response");
+      log("📄 Raw claim output:", raw);
+      return false;
+    }
+
+    // Only log success if the contract result is actually successful
+    const result = parsed?.result;
+
+    if (result === false) {
+      log("ℹ️ Claim not available or failed:", raw);
+      return false;
+    }
+
+    log("✅ CHIP Claimed");
+    if (raw) {
+      log("📄 Claim response:", raw);
+    }
+    return true;
   } catch (err) {
-    log("❌ Claim error:", err.message);
+    const detail =
+      err?.stderr?.trim?.() ||
+      err?.stdout?.trim?.() ||
+      err?.message ||
+      String(err);
+
+    log("❌ Claim error:", detail);
+    return false;
   }
 }
+
 
 async function fetchMarkets() {
   try {
@@ -406,8 +485,26 @@ async function approveBetLane(amount) {
       log("ℹ️ vara-wallet:", stderr.trim());
     }
 
-    if (stdout && stdout.trim()) {
-      log("📄 Approve response:", stdout.trim());
+    const raw = stdout.trim();
+    let parsed = null;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      log("❌ Approve error: unable to parse approve response");
+      log("📄 Raw approve output:", raw);
+      return false;
+    }
+
+    if (raw) {
+      log("📄 Approve response:", raw);
+    }
+
+    const result = parsed?.result;
+
+    if (result !== true) {
+      log("❌ Approval failed: result was not true");
+      return false;
     }
 
     log("✅ Approval successful");
@@ -424,13 +521,14 @@ async function approveBetLane(amount) {
   }
 }
 
+
 async function placeBet(basketId, quote) {
   if (!voucherId) return;
 
   try {
     const approved = await approveBetLane(BET_AMOUNT);
     if (!approved) {
-      log("⚠️ Skipping bet because approval failed");
+      log("⚠️ Skipping bet because approval did not succeed");
       return;
     }
 
