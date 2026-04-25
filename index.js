@@ -418,116 +418,127 @@ async function fetchMarkets() {
     }
 
     async function approveBetLane(amount) {
-        if (!voucherId) return false;
+  if (!voucherId) return false;
 
-        try {
-            const { promisify } = await import("node:util");
-            const { execFile } = await import("node:child_process");
-            const { existsSync } = await import("node:fs");
-            const { join } = await import("node:path");
+  try {
+    const { promisify } = await import("node:util");
+    const { execFile } = await import("node:child_process");
+    const { existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
 
-            const execFileAsync = promisify(execFile);
-            const home = process.env.HOME || process.env.USERPROFILE || "";
+    const execFileAsync = promisify(execFile);
+    const home = process.env.HOME || process.env.USERPROFILE || "";
 
-            const idlCandidates = [
-                process.env.BET_TOKEN_IDL,
-                process.env.POLYBASKETS_SKILLS_DIR
-                    ? join(process.env.POLYBASKETS_SKILLS_DIR, "idl", "bet_token_client.idl")
-                    : null,
-                join(process.cwd(), "skills", "idl", "bet_token_client.idl"),
-                join(home, ".agents", "skills", "polybaskets-skills", "idl", "bet_token_client.idl")
-            ].filter(Boolean);
+    const idlCandidates = [
+      process.env.BET_TOKEN_IDL,
+      process.env.POLYBASKETS_SKILLS_DIR
+        ? join(process.env.POLYBASKETS_SKILLS_DIR, "idl", "bet_token_client.idl")
+        : null,
+      join(process.cwd(), "skills", "idl", "bet_token_client.idl"),
+      join(home, ".agents", "skills", "polybaskets-skills", "idl", "bet_token_client.idl")
+    ].filter(Boolean);
 
-            const idlPath = idlCandidates.find((p) => existsSync(p));
+    const idlPath = idlCandidates.find((p) => existsSync(p));
 
-            if (!idlPath) {
-                log("❌ Approve error: bet_token_client.idl not found");
-                log("ℹ️ Looked in:", idlCandidates.join(" | "));
-                return false;
-            }
-
-            if (!process.env.PRIVATE_KEY) {
-                log("❌ Approve error: PRIVATE_KEY missing");
-                return false;
-            }
-
-            const signerArgs = process.env.PRIVATE_KEY.trim().includes(" ")
-                ? ["--mnemonic", process.env.PRIVATE_KEY.trim()]
-                : ["--seed", process.env.PRIVATE_KEY.trim()];
-
-            log("✅ Approving CHIP for BetLane...");
-
-            const numericAmount = Number(amount);
-            if (!Number.isSafeInteger(numericAmount) || numericAmount <= 0) {
-                log("❌ Approve error: invalid numeric amount");
-                return false;
-            }
-
-            const argsJson = `[\"${BET_LANE}\", ${numericAmount}]`;
-
-
-            await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], {
-                maxBuffer: 1024 * 1024
-            });
-
-            const { stdout, stderr } = await execFileAsync(
-                "vara-wallet",
-                [
-                    ...signerArgs,
-                    "call",
-                    BET_TOKEN,
-                    "BetToken/Approve",
-                    "--args",
-                    argsJson,
-                    "--voucher",
-                    voucherId,
-                    "--idl",
-                    idlPath
-                ],
-                {
-                    maxBuffer: 1024 * 1024 * 4
-                }
-            );
-
-            if (stderr && stderr.trim()) {
-                log("ℹ️ vara-wallet:", stderr.trim());
-            }
-
-            const raw = stdout.trim();
-            let parsed = null;
-
-            try {
-                parsed = JSON.parse(raw);
-            } catch {
-                log("❌ Approve error: unable to parse approve response");
-                log("📄 Raw approve output:", raw);
-                return false;
-            }
-
-            if (raw) {
-                log("📄 Approve response:", raw);
-            }
-
-            const result = parsed?.result;
-
-            if (result !== true) {
-                log("❌ Approval failed: result was not true");
-                return false;
-            }
-
-            log("✅ Approval successful");
-            return true;
-        } catch (err) {
-            const detail =
-                err?.stderr?.trim?.() ||
-                err?.stdout?.trim?.() ||
-                err?.message ||
-                String(err);
-
-            log("❌ Approve error:", detail);
-            return false;
-        }
+    if (!idlPath) {
+      log("❌ Approve error: bet_token_client.idl not found");
+      log("ℹ️ Looked in:", idlCandidates.join(" | "));
+      return false;
     }
+
+    if (!process.env.PRIVATE_KEY) {
+      log("❌ Approve error: PRIVATE_KEY missing");
+      return false;
+    }
+
+    const signerArgs = process.env.PRIVATE_KEY.trim().includes(" ")
+      ? ["--mnemonic", process.env.PRIVATE_KEY.trim()]
+      : ["--seed", process.env.PRIVATE_KEY.trim()];
+
+    const normalizedAmount = String(amount).trim();
+    if (!/^\d+$/.test(normalizedAmount)) {
+      log("❌ Approve error: invalid amount format");
+      return false;
+    }
+
+    await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], {
+      maxBuffer: 1024 * 1024
+    });
+
+    const runApprove = async (rawAmount, label) => {
+      const argsJson = `["${BET_LANE}", ${rawAmount}]`;
+
+      const { stdout, stderr } = await execFileAsync(
+        "vara-wallet",
+        [
+          ...signerArgs,
+          "call",
+          BET_TOKEN,
+          "BetToken/Approve",
+          "--args",
+          argsJson,
+          "--voucher",
+          voucherId,
+          "--idl",
+          idlPath
+        ],
+        {
+          maxBuffer: 1024 * 1024 * 4
+        }
+      );
+
+      if (stderr && stderr.trim()) {
+        log(`ℹ️ vara-wallet (${label}):`, stderr.trim());
+      }
+
+      const raw = stdout.trim();
+      let parsed = null;
+
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        log(`❌ Approve error: unable to parse ${label} response`);
+        log("📄 Raw approve output:", raw);
+        return false;
+      }
+
+      log(`📄 Approve ${label} response:`, raw);
+      return parsed?.result === true;
+    };
+
+    log("✅ Resetting CHIP allowance to 0...");
+    const resetOk = await runApprove("0", "reset");
+
+    if (resetOk) {
+      log("✅ Allowance reset successful");
+    } else {
+      log("ℹ️ Allowance reset returned false, continuing anyway");
+    }
+
+    await wait(1500);
+
+    log("✅ Approving CHIP for BetLane...");
+    const approveOk = await runApprove(normalizedAmount, "final");
+
+    if (!approveOk) {
+      log("❌ Approval failed: result was not true");
+      return false;
+    }
+
+    log("✅ Approval successful");
+    await wait(1500);
+    return true;
+  } catch (err) {
+    const detail =
+      err?.stderr?.trim?.() ||
+      err?.stdout?.trim?.() ||
+      err?.message ||
+      String(err);
+
+    log("❌ Approve error:", detail);
+    return false;
+  }
+}
 
 
     async function placeBet(basketId, quote) {
