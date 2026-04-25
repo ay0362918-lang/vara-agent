@@ -203,17 +203,22 @@ async function claimCHIP() {
       log("📄 Claim response:", raw);
     }
     return true;
-  } catch (err) {
+    } catch (err) {
     const detail =
       err?.stderr?.trim?.() ||
       err?.stdout?.trim?.() ||
       err?.message ||
       String(err);
 
+    if (detail.includes("ClaimTooEarly")) {
+      log("ℹ️ Claim not available yet");
+      return false;
+    }
+
     log("❌ Claim error:", detail);
     return false;
   }
-}
+
 
 
 async function fetchMarkets() {
@@ -453,10 +458,14 @@ async function approveBetLane(amount) {
 
     log("✅ Approving CHIP for BetLane...");
 
-    const argsJson = JSON.stringify([
-      BET_LANE,
-      String(amount)
-    ]);
+    const numericAmount = Number(amount);
+if (!Number.isSafeInteger(numericAmount) || numericAmount <= 0) {
+  log("❌ Approve error: invalid numeric amount");
+  return false;
+}
+
+const argsJson = `[\"${BET_LANE}\", ${numericAmount}]`;
+
 
     await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], {
       maxBuffer: 1024 * 1024
