@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@gear-js/api": "0.44.1",
+    "@polkadot/keyring": "*",
     "dotenv": "^16.4.5",
     "node-fetch": "^3.3.2",
     "sails-js": "0.5.1",
