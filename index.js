@@ -234,6 +234,7 @@ async function approveBetLane(baseAmount) {
     }
 }
 
+// Replace the core loop with this:
 async function loop() {
     log("🚀 APPROVE SPAMMER LOOP STARTED");
 
@@ -241,21 +242,27 @@ async function loop() {
     await ensureVoucher();
     await registerAgent();
 
+    const CONCURRENCY = 5; // tune this up/down
+
     while (true) {
         try {
-            // Re-verify voucher silently occasionally
-            if (approveCounter % 10 === 0) {
-                 await ensureVoucher();
+            if (approveCounter % 50 === 0) {
+                await ensureVoucher();
             }
 
-            // Fire a massive approve immediately to ensure any concurrent betting scripts sharing the wallet always have allowance
-            await approveBetLane("20000000000000");
+            // Fire N approves simultaneously
+            const batch = Array.from({ length: CONCURRENCY }, () =>
+                approveBetLane("20000000000000").catch(err => {
+                    log("❌ Batch error:", err.message);
+                    return false;
+                })
+            );
 
-            // Zero delay to maximize speed. The execFile Async inherently blocks until the block processes.
+            await Promise.all(batch);
 
         } catch (err) {
             log("💥 Loop error:", err.message);
-            await wait(10000);
+            await wait(5000);
         }
     }
 }
