@@ -25,7 +25,7 @@ let api, account, voucherId, sailsBetToken;
 let currentNonce;
 let approveCounter = 0;
 let pendingTxs = 0;
-const MAX_PENDING = 50; // How many txs to keep in flight
+const MAX_PENDING = 50; 
 
 function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
@@ -59,7 +59,6 @@ async function init() {
     if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY missing");
     account = keyring.addFromUri(process.env.PRIVATE_KEY);
     
-    // Get initial nonce
     const { nonce } = await api.query.system.account(account.address);
     currentNonce = nonce.toNumber();
     
@@ -97,22 +96,21 @@ async function sendApprovePipelined() {
     const amount = BigInt(20000000000000) + BigInt(Math.floor(Math.random() * 1000000));
     
     try {
-        // 1. Encode the message using Sails
-        const tx = sailsBetToken.services.BetToken.functions.Approve(
+        // FIX 1: Use .encode() instead of .encodePayload()
+        const payload = sailsBetToken.services.BetToken.functions.Approve(
             BET_LANE_ACTOR_ID,
             amount
-        );
+        ).encode();
 
-        // 2. Build the extrinsic manually to have full control
         const nonce = currentNonce++;
         pendingTxs++;
 
-        // We use the low-level API to bypass potential SDK bugs in withVoucher
-        const extrinsic = api.voucher.call(voucherId, {
+        // FIX 2: Use api.tx.voucher.call instead of api.voucher.call
+        const extrinsic = api.tx.voucher.call(voucherId, {
             SendMessage: {
                 destination: BET_TOKEN,
-                payload: tx.encodePayload(),
-                gasLimit: 50_000_000_000, // Fixed high gas limit for speed
+                payload: payload,
+                gasLimit: 50_000_000_000,
                 value: 0,
                 keepAlive: true
             }
@@ -145,20 +143,16 @@ async function sendApprovePipelined() {
 async function loop() {
     log("🚀 STARTING HIGH-SPEED PIPELINE");
     
-    // Background voucher refresher
     setInterval(ensureVoucher, 60000);
 
     while (true) {
         if (pendingTxs < MAX_PENDING) {
             sendApprovePipelined();
-            // Tiny delay to prevent overwhelming the local CPU, but fast enough to flood
             await wait(50); 
         } else {
-            // Wait a bit for the pipeline to clear
             await wait(100);
         }
         
-        // Every 1000 txs, re-sync nonce just in case
         if (approveCounter > 0 && approveCounter % 1000 === 0) {
             const { nonce } = await api.query.system.account(account.address);
             currentNonce = Math.max(currentNonce, nonce.toNumber());
