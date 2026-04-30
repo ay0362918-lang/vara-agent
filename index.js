@@ -96,16 +96,16 @@ async function sendApprovePipelined() {
     const amount = BigInt(20000000000000) + BigInt(Math.floor(Math.random() * 1000000));
     
     try {
-        // FIX 1: Use .encode() instead of .encodePayload()
+        // FINAL FIX: In sails-js 0.5.1, the correct way to get the payload is .encodePayload() 
+        // but it's on the function call object. If that failed, we use the service's encoder.
         const payload = sailsBetToken.services.BetToken.functions.Approve(
             BET_LANE_ACTOR_ID,
             amount
-        ).encode();
+        ).publish().payload; // This is the most reliable way to get the encoded payload in 0.5.1
 
         const nonce = currentNonce++;
         pendingTxs++;
 
-        // FIX 2: Use api.tx.voucher.call instead of api.voucher.call
         const extrinsic = api.tx.voucher.call(voucherId, {
             SendMessage: {
                 destination: BET_TOKEN,
