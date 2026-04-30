@@ -10,21 +10,22 @@ import fetch from "node-fetch";
 
 dotenv.config();
 
-console.log("⚡ POLYBASKETS NATIVE SDK AGENT STARTING...");
+console.log("🚀 POLYBASKETS HIGH-THROUGHPUT AGENT STARTING...");
 
 const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
 const BET_TOKEN     = "0x186f6cda18fea13d9fc5969eec5a379220d6726f64c1d5f4b346e89271f917bc";
 const BET_LANE      = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc";
 const VOUCHER_URL   = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
-const AGENT_NAME    = process.env.AGENT_NAME || "hy4";
 const hexAddress    = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 
-// Pre-decode BET_LANE actor_id once — this was the WASM crash cause
 const BET_LANE_ACTOR_ID = decodeAddress(BET_LANE);
 
 let api, account, voucherId, sailsBetToken;
+let currentNonce;
 let approveCounter = 0;
+let pendingTxs = 0;
+const MAX_PENDING = 50; // How many txs to keep in flight
 
 function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
@@ -36,6 +37,7 @@ async function initSails() {
         process.env.BET_TOKEN_IDL,
         join(process.cwd(), "skills", "idl", "bet_token_client.idl"),
         join(home, ".agents", "skills", "polybaskets-skills", "idl", "bet_token_client.idl"),
+        "/home/ubuntu/skills/idl/bet_token_client.idl"
     ].filter(Boolean);
 
     const idlPath = idlCandidates.find(p => existsSync(p));
@@ -47,16 +49,21 @@ async function initSails() {
     sailsBetToken.parseIdl(idl);
     sailsBetToken.setApi(api);
     sailsBetToken.setProgramId(BET_TOKEN);
-    log("✅ Sails IDL loaded from:", idlPath);
+    log("✅ Sails IDL loaded");
 }
 
 async function init() {
-    log("🔌 Connecting to Vara WebSocket...");
+    log("🔌 Connecting to Vara...");
     api = await GearApi.create({ providerAddress: RPC });
     const keyring = new Keyring({ type: "sr25519" });
     if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY missing");
     account = keyring.addFromUri(process.env.PRIVATE_KEY);
-    log("✅ Connected:", account.address);
+    
+    // Get initial nonce
+    const { nonce } = await api.query.system.account(account.address);
+    currentNonce = nonce.toNumber();
+    
+    log("✅ Connected:", account.address, "| Initial Nonce:", currentNonce);
     await initSails();
 }
 
@@ -77,62 +84,84 @@ async function ensureVoucher() {
             })
         });
         const postData = await postRes.json();
-        if (postData.voucherId) voucherId = postData.voucherId;
-        else if (data.voucherId) voucherId = data.voucherId;
-        log("🎫 Voucher:", voucherId);
+        voucherId = postData.voucherId || data.voucherId;
+        log("🎫 Voucher updated:", voucherId);
     } catch (err) {
         log("⚠️ Voucher error:", err.message);
     }
 }
 
-async function approveBetLane() {
-    if (!voucherId || !sailsBetToken) return false;
+async function sendApprovePipelined() {
+    if (!voucherId || !sailsBetToken || pendingTxs >= MAX_PENDING) return;
 
+    const amount = BigInt(20000000000000) + BigInt(Math.floor(Math.random() * 1000000));
+    
     try {
-        const amount = BigInt(20000000000000) + BigInt(Math.floor(Math.random() * 1_000_000));
-
-        // KEY FIX: pass decoded actor_id, not raw hex string
-        // KEY FIX: amount as BigInt for u256
+        // 1. Encode the message using Sails
         const tx = sailsBetToken.services.BetToken.functions.Approve(
             BET_LANE_ACTOR_ID,
             amount
         );
 
-        await tx
-            .withAccount(account)
-            .withVoucher(voucherId)
-            .calculateGas();
+        // 2. Build the extrinsic manually to have full control
+        const nonce = currentNonce++;
+        pendingTxs++;
 
-        await new Promise((resolve, reject) => {
-            tx.signAndSend(account, ({ status, events }) => {
-                if (status.isInBlock) {
-                    approveCounter++;
-                    log(`✅ Approve #${approveCounter} in block`);
-                    resolve(true);
-                }
-                if (status.isError) {
-                    reject(new Error("tx error status"));
-                }
-            }).catch(reject);
+        // We use the low-level API to bypass potential SDK bugs in withVoucher
+        const extrinsic = api.voucher.call(voucherId, {
+            SendMessage: {
+                destination: BET_TOKEN,
+                payload: tx.encodePayload(),
+                gasLimit: 50_000_000_000, // Fixed high gas limit for speed
+                value: 0,
+                keepAlive: true
+            }
         });
 
-        return true;
+        extrinsic.signAndSend(account, { nonce }, ({ status, dispatchError }) => {
+            if (status.isInBlock || status.isFinalized) {
+                pendingTxs--;
+                approveCounter++;
+                if (approveCounter % 10 === 0) log(`🔥 Total Approves: ${approveCounter} | Pending: ${pendingTxs}`);
+            }
+            if (dispatchError) {
+                pendingTxs--;
+                log("❌ Dispatch Error");
+            }
+            if (status.isUsurped || status.isDropped || status.isInvalid) {
+                pendingTxs--;
+                log(`⚠️ Tx ${status.type}`);
+            }
+        }).catch(err => {
+            pendingTxs--;
+            log("💥 Send Error:", err.message);
+        });
+
     } catch (err) {
-        log("❌ Approve error:", String(err.message || err).slice(0, 100));
-        return false;
+        log("❌ Build error:", err.message);
     }
 }
 
 async function loop() {
-    log("🚀 NATIVE SDK LOOP — no CLI, persistent WS");
+    log("🚀 STARTING HIGH-SPEED PIPELINE");
+    
+    // Background voucher refresher
+    setInterval(ensureVoucher, 60000);
 
     while (true) {
-        try {
-            if (approveCounter % 50 === 0) await ensureVoucher();
-            await approveBetLane();
-        } catch (err) {
-            log("💥 Loop error:", err.message);
-            await wait(500);
+        if (pendingTxs < MAX_PENDING) {
+            sendApprovePipelined();
+            // Tiny delay to prevent overwhelming the local CPU, but fast enough to flood
+            await wait(50); 
+        } else {
+            // Wait a bit for the pipeline to clear
+            await wait(100);
+        }
+        
+        // Every 1000 txs, re-sync nonce just in case
+        if (approveCounter > 0 && approveCounter % 1000 === 0) {
+            const { nonce } = await api.query.system.account(account.address);
+            currentNonce = Math.max(currentNonce, nonce.toNumber());
         }
     }
 }
