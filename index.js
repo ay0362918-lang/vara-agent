@@ -1,5 +1,6 @@
 import { GearApi } from "@gear-js/api";
 import { Keyring } from "@polkadot/keyring";
+import { hexToU8a, u8aToHex } from "@polkadot/util";
 import { setTimeout as wait } from "timers/promises";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
@@ -8,7 +9,7 @@ dotenv.config();
 
 if (!process.env.PRIVATE_KEY) { console.error("💥 PRIVATE_KEY not set"); process.exit(1); }
 
-console.log("⚡ HY4 RAW PAYLOAD - MAXIMUM SPEED");
+console.log("⚡ HY4 RAW SCALE - MAXIMUM SPEED");
 
 const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
@@ -17,9 +18,8 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 
-// Pre-built fixed part of payload — never changes
-// "BetToken" + "Approve" + BET_LANE_bytes
-const PAYLOAD_PREFIX = "20426574546f6b656e1c417070726f766535848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc";
+// Fixed payload prefix — BetToken + Approve + BET_LANE bytes — never changes
+const PAYLOAD_PREFIX = hexToU8a("0x426574546f6b656e1c417070726f766535848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc");
 
 let api, account, voucherId;
 let approveCounter = 0;
@@ -28,11 +28,56 @@ function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
 }
 
-function buildPayload(amount) {
+function encodeU64LE(n) {
+    const buf = Buffer.alloc(8);
+    buf.writeBigUInt64LE(BigInt(n));
+    return buf;
+}
+
+function encodeU128LE(n) {
+    const buf = Buffer.alloc(16);
+    buf.writeBigUInt64LE(BigInt(n) & 0xFFFFFFFFFFFFFFFFn, 0);
+    buf.writeBigUInt64LE(BigInt(n) >> 64n, 8);
+    return buf;
+}
+
+function compactEncode(n) {
+    if (n < 64) return Buffer.from([n << 2]);
+    if (n < 16384) {
+        const v = (n << 2) | 1;
+        return Buffer.from([v & 0xff, v >> 8]);
+    }
+    throw new Error("compact encode too large");
+}
+
+function buildRawCall(voucherHex, amount) {
     // Encode amount as u256 little-endian 32 bytes
-    const hex = BigInt(amount).toString(16).padStart(64, '0');
-    const le = hex.match(/.{2}/g).reverse().join('');
-    return "0x" + PAYLOAD_PREFIX + le;
+    const amountHex = BigInt(amount).toString(16).padStart(64, '0');
+    const amountLE = hexToU8a("0x" + amountHex.match(/.{2}/g).reverse().join(''));
+
+    // Full payload = prefix + amount_le
+    const payload = Buffer.concat([
+        Buffer.from([0x20]),         // compact length prefix for payload string header
+        PAYLOAD_PREFIX,
+        amountLE
+    ]);
+
+    const voucherBytes = hexToU8a(voucherHex);
+    const destinationBytes = hexToU8a(BET_TOKEN);
+
+    // Build raw SCALE bytes for gearVoucher.call
+    // pallet 107 (0x6b) + call 1 (0x01) + voucher_id(32) + SendMessage(0x00) + dest(32) + compact_payload_len + payload + gas(8) + value(16) + keepAlive(1)
+    return Buffer.concat([
+        Buffer.from([0x6b, 0x01]),
+        Buffer.from(voucherBytes),
+        Buffer.from([0x00]),                    // SendMessage variant
+        Buffer.from(destinationBytes),
+        compactEncode(payload.length),
+        payload,
+        encodeU64LE(25000000000n),
+        encodeU128LE(0n),
+        Buffer.from([0x00]),                    // keepAlive = false
+    ]);
 }
 
 async function init() {
@@ -44,37 +89,42 @@ async function init() {
 }
 
 async function ensureVoucher() {
-    // Use the voucher with the latest expiry
-    voucherId = "0xe48bcc939a5e688786c1f10984279854d0d707668f90af641817155807a113ad";
-    log("🎫 Using voucher:", voucherId);
+    try {
+        const res = await fetch(`${VOUCHER_URL}/${hexAddress}`);
+        const data = await res.json();
+        if (data.voucherId) {
+            voucherId = data.voucherId;
+            if (data.canTopUpNow === false) return;
+        }
+        const postRes = await fetch(VOUCHER_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ account: hexAddress, programs: [BASKET_MARKET, BET_TOKEN, BET_LANE] })
+        });
+        const postData = await postRes.json();
+        if (postData.voucherId) voucherId = postData.voucherId;
+        log("🎫 Voucher:", voucherId);
+    } catch (err) {
+        log("⚠️ Voucher error:", err.message);
+    }
 }
 
 async function approve() {
     if (!voucherId) return false;
     try {
         const amount = 20000000000000 + Math.floor(Math.random() * 99999);
-        const payload = buildPayload(amount);
+        const rawCall = buildRawCall(voucherId, amount);
 
-        const voucherCall = api.tx.gearVoucher.call(
-            voucherId,
-            {
-                SendMessage: {
-                    destination: BET_TOKEN,
-                    payload: payload,
-                    gasLimit: 25000000000n,
-                    value: 0,
-                    keepAlive: false
-                }
-            }
-        );
+        log("📤 Raw call hex:", u8aToHex(rawCall).slice(0, 80));
 
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            voucherCall.signAndSend(account, ({ status }) => {
+            api.tx(rawCall).signAndSend(account, ({ status }) => {
+                log("📡 Status:", status.type);
                 if (status.isInBlock) {
                     clearTimeout(timer);
                     approveCounter++;
-                    log(`✅ #${approveCounter}`);
+                    log(`✅ #${approveCounter} IN BLOCK`);
                     resolve(true);
                 }
                 if (status.isDropped || status.isInvalid || status.isError) {
@@ -96,7 +146,7 @@ async function main() {
     await ensureVoucher();
     if (!voucherId) { log("💥 No voucher"); process.exit(1); }
 
-    log("🚀 LOOP STARTED - raw payload, no Sails, no CLI");
+    log("🚀 LOOP STARTED - raw SCALE bytes, no type registry");
     let errors = 0;
 
     while (true) {
