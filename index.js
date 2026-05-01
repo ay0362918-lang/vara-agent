@@ -1,10 +1,6 @@
 import { GearApi } from "@gear-js/api";
 import { Keyring } from "@polkadot/keyring";
-import { Sails } from "sails-js";
-import { SailsIdlParser } from "sails-js-parser";
 import { setTimeout as wait } from "timers/promises";
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 
@@ -12,7 +8,7 @@ dotenv.config();
 
 if (!process.env.PRIVATE_KEY) { console.error("💥 PRIVATE_KEY not set"); process.exit(1); }
 
-console.log("⚡ HY4 NATIVE SDK - MAXIMUM SPEED");
+console.log("⚡ HY4 RAW PAYLOAD - MAXIMUM SPEED");
 
 const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
@@ -21,29 +17,22 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 
-let api, account, voucherId, sails;
+// Pre-built fixed part of payload — never changes
+// "BetToken" + "Approve" + BET_LANE_bytes
+const PAYLOAD_PREFIX = "20426574546f6b656e1c417070726f766535848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc";
+
+let api, account, voucherId;
 let approveCounter = 0;
 
 function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
 }
 
-async function initSails() {
-    const home = process.env.HOME || "/root";
-    const idlPath = [
-        process.env.BET_TOKEN_IDL,
-        join(process.cwd(), "skills", "idl", "bet_token_client.idl"),
-        join(home, ".agents", "skills", "polybaskets-skills", "idl", "bet_token_client.idl"),
-    ].filter(Boolean).find(p => existsSync(p));
-
-    if (!idlPath) throw new Error("IDL not found");
-    const idl = readFileSync(idlPath, "utf-8");
-    const parser = await SailsIdlParser.new();
-    sails = new Sails(parser);
-    sails.parseIdl(idl);
-    sails.setApi(api);
-    sails.setProgramId(BET_TOKEN);
-    log("✅ Sails ready:", idlPath);
+function buildPayload(amount) {
+    // Encode amount as u256 little-endian 32 bytes
+    const hex = BigInt(amount).toString(16).padStart(64, '0');
+    const le = hex.match(/.{2}/g).reverse().join('');
+    return "0x" + PAYLOAD_PREFIX + le;
 }
 
 async function init() {
@@ -52,7 +41,6 @@ async function init() {
     const keyring = new Keyring({ type: "sr25519" });
     account = keyring.addFromUri(process.env.PRIVATE_KEY);
     log("✅ Wallet:", account.address);
-    await initSails();
 }
 
 async function ensureVoucher() {
@@ -77,20 +65,17 @@ async function ensureVoucher() {
 }
 
 async function approve() {
-    if (!voucherId || !sails) return false;
+    if (!voucherId) return false;
     try {
-        const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
-
-        // Get payload BEFORE withAccount/withGas — clean tx object
-        const tx = sails.services.BetToken.functions.Approve(BET_LANE, amount);
-        const sailsPayload = tx.extrinsic.method.args[1];
+        const amount = 20000000000000 + Math.floor(Math.random() * 99999);
+        const payload = buildPayload(amount);
 
         const voucherCall = api.tx.gearVoucher.call(
             voucherId,
             {
                 SendMessage: {
                     destination: BET_TOKEN,
-                    payload: sailsPayload.toHex(),
+                    payload: payload,
                     gasLimit: 25000000000n,
                     value: 0,
                     keepAlive: false
@@ -124,16 +109,14 @@ async function approve() {
 async function main() {
     await init();
     await ensureVoucher();
-
     if (!voucherId) { log("💥 No voucher"); process.exit(1); }
 
-    log("🚀 LOOP STARTED - native SDK, no CLI");
+    log("🚀 LOOP STARTED - raw payload, no Sails, no CLI");
     let errors = 0;
 
     while (true) {
         try {
             if (approveCounter > 0 && approveCounter % 50 === 0) await ensureVoucher();
-
             const ok = await approve();
             if (ok) {
                 errors = 0;
