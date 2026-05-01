@@ -30,14 +30,20 @@ function log(...args) {
 
 function encodeU64LE(n) {
     const buf = Buffer.alloc(8);
-    buf.writeBigUInt64LE(BigInt(n));
+    const big = BigInt(n);
+    // Write as two 32-bit chunks to avoid 53-bit limit
+    buf.writeUInt32LE(Number(big & 0xFFFFFFFFn), 0);
+    buf.writeUInt32LE(Number((big >> 32n) & 0xFFFFFFFFn), 4);
     return buf;
 }
 
 function encodeU128LE(n) {
     const buf = Buffer.alloc(16);
-    buf.writeBigUInt64LE(BigInt(n) & 0xFFFFFFFFFFFFFFFFn, 0);
-    buf.writeBigUInt64LE(BigInt(n) >> 64n, 8);
+    const big = BigInt(n);
+    buf.writeUInt32LE(Number(big & 0xFFFFFFFFn), 0);
+    buf.writeUInt32LE(Number((big >> 32n) & 0xFFFFFFFFn), 4);
+    buf.writeUInt32LE(Number((big >> 64n) & 0xFFFFFFFFn), 8);
+    buf.writeUInt32LE(Number((big >> 96n) & 0xFFFFFFFFn), 12);
     return buf;
 }
 
@@ -118,29 +124,27 @@ async function approve() {
         log("📤 Raw call hex:", u8aToHex(rawCall).slice(0, 80));
 
         await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            api.tx(rawCall).signAndSend(account, ({ status }) => {
-                log("📡 Status:", status.type);
-                if (status.isInBlock) {
-                    clearTimeout(timer);
-                    approveCounter++;
-                    log(`✅ #${approveCounter} IN BLOCK`);
-                    resolve(true);
-                }
-                if (status.isDropped || status.isInvalid || status.isError) {
-                    clearTimeout(timer);
-                    reject(new Error("tx failed: " + status.type));
-                }
-            }).catch(e => { clearTimeout(timer); reject(e); });
-        });
+            // Replace api.tx(rawCall).signAndSend with this:
+const extrinsic = api.registry.createType('Extrinsic', {
+    method: rawCall
+}, { version: 4 });
 
-        return true;
-    } catch (err) {
-        log("❌", String(err.message || err).slice(0, 100));
-        return false;
-    }
-}
-
+await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timeout")), 15000);
+    api.tx(u8aToHex(rawCall)).signAndSend(account, ({ status }) => {
+        log("📡 Status:", status.type);
+        if (status.isInBlock) {
+            clearTimeout(timer);
+            approveCounter++;
+            log(`✅ #${approveCounter} IN BLOCK`);
+            resolve(true);
+        }
+        if (status.isDropped || status.isInvalid || status.isError) {
+            clearTimeout(timer);
+            reject(new Error("tx failed: " + status.type));
+        }
+    }).catch(e => { clearTimeout(timer); reject(e); });
+});
 async function main() {
     await init();
     await ensureVoucher();
