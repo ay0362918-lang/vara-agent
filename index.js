@@ -107,18 +107,20 @@ async function approve() {
 
         // Cache gas — only calculate once, reuse forever
         // sails-js 0.5.1 uses minLimit (not min_limit)
-        if (!cachedGas) {
-            log("⛽ Calculating gas (one time)...");
-            const gasInfo = await tx.calculateGas(false, 10);
-            log("⛽ Gas object:", JSON.stringify(gasInfo));
-            // Try all known property names across versions
-            cachedGas = gasInfo.minLimit
-                ?? gasInfo.min_limit
-                ?? gasInfo.gasLimit
-                ?? BigInt(25000000000);
-            log("⛽ Gas cached:", cachedGas.toString());
-        }
-
+        // WITH THIS:
+if (!cachedGas) {
+    log("⛽ Calculating gas...");
+    const gasInfo = await tx.calculateGas(false, 10);
+    // Log individual properties safely — no JSON.stringify
+    log("⛽ minLimit:", gasInfo?.minLimit?.toString());
+    log("⛽ min_limit:", gasInfo?.min_limit?.toString());
+    log("⛽ gasLimit:", gasInfo?.gasLimit?.toString());
+    cachedGas = gasInfo.minLimit
+        ?? gasInfo.min_limit
+        ?? gasInfo.gasLimit
+        ?? BigInt(25000000000);
+    log("⛽ Gas cached:", cachedGas.toString());
+}
         tx.withGas(cachedGas);
 
         await new Promise((resolve, reject) => {
