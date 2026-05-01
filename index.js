@@ -114,12 +114,17 @@ async function approve() {
     try {
         const amount = 20000000000000 + Math.floor(Math.random() * 99999);
         const rawCall = buildRawCall(voucherId, amount);
+        const hexCall = u8aToHex(rawCall);
 
-        log("📤 Raw:", u8aToHex(rawCall).slice(0, 80));
+        // Create the call object from raw bytes
+        const call = api.registry.createType('Call', hexCall);
+        const tx = api.registry.createType('Extrinsic', call);
+
+        log("📤 Call:", hexCall.slice(0, 80));
 
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            api.tx(u8aToHex(rawCall)).signAndSend(account, ({ status }) => {
+            tx.signAndSend(account, { nonce: -1 }, ({ status }) => {
                 log("📡", status.type);
                 if (status.isInBlock) {
                     clearTimeout(timer);
