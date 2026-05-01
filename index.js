@@ -12,7 +12,7 @@ dotenv.config();
 
 const execFileAsync = promisify(execFile);
 
-console.log("🔥 HY4 ULTRA-FAST SPAMMER - PARALLEL MODE");
+console.log("🔥 HY4 APPROVE SPAMMER - MAXIMUM SPEED");
 
 const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
@@ -22,14 +22,10 @@ const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/vouc
 const hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 const AGENT_NAME = process.env.AGENT_NAME || "hy4";
 
-// CONFIGURATION
-const CONCURRENCY = 5; // Number of parallel transactions
-const GAS_LIMIT = "25000000000";
-
 let voucherId;
 let approveCounter = 0;
 
-function log(...args ) {
+function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
 }
 
@@ -68,8 +64,7 @@ async function ensureVoucher() {
             })
         });
         const postData = await postRes.json();
-        if (postData.voucherId) voucherId = postData.voucherId;
-        else if (data.voucherId) voucherId = data.voucherId;
+        voucherId = postData.voucherId || data.voucherId;
         log("🎫 Voucher:", voucherId);
     } catch (err) {
         log("⚠️ Voucher error:", err.message);
@@ -95,83 +90,84 @@ async function registerAgent() {
     }
 }
 
-async function approve(nonce) {
+async function approve() {
     if (!voucherId || !IDL_PATH) return false;
     try {
+        // Amount as QUOTED STRING — u256 requires this
         const amount = 20000000000000 + Math.floor(Math.random() * 9999);
-        const args = [
+        
+        // KEY FIX: amount wrapped in quotes inside the JSON args
+        const argsJson = `["${BET_LANE}", "${amount}"]`;
+
+        const { stdout } = await execFileAsync("vara-wallet", [
             ...SIGNER,
             "call", BET_TOKEN,
             "BetToken/Approve",
-            "--args", `["${BET_LANE}", ${amount}]`,
+            "--args", argsJson,
             "--voucher", voucherId,
-            "--gas-limit", GAS_LIMIT,
+            "--gas-limit", "25000000000",
             "--idl", IDL_PATH
-        ];
+        ], { maxBuffer: 1024 * 1024 * 4, timeout: 120000 });
 
-        // Add nonce if provided
-        if (nonce !== undefined) {
-            args.push("--nonce", nonce.toString());
-        }
+        const raw = stdout?.trim() || "{}";
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch { parsed = {}; }
 
-        const { stdout } = await execFileAsync("vara-wallet", args, {
-            maxBuffer: 1024 * 1024 * 4,
-            timeout: 120000
-        });
-
-        const parsed = JSON.parse(stdout?.trim() || "{}");
-        if (parsed?.result === true || parsed?.status === "Success") {
+        // KEY FIX: Approve returns result:false normally — that's SUCCESS
+        // Only fail if the call itself threw an exception
+        // A successful Approve tx will have a result field (true OR false)
+        if (parsed && "result" in parsed) {
             approveCounter++;
-            log(`✅ #${approveCounter} (Nonce: ${nonce})`);
+            log(`✅ #${approveCounter} (result:${parsed.result})`);
             return true;
         }
+
+        log("⚠️ Unexpected response:", raw.slice(0, 80));
         return false;
+
     } catch (err) {
         log("❌", String(err.message || err).slice(0, 60));
         return false;
     }
 }
 
-async function getInitialNonce() {
-    try {
-        const { stdout } = await execFileAsync("vara-wallet", ["balance", "--account", hexAddress], { timeout: 30000 });
-        const data = JSON.parse(stdout);
-        return parseInt(data.nonce);
-    } catch (err) {
-        log("⚠️ Failed to get nonce, falling back to auto");
-        return undefined;
-    }
-}
-
 async function main() {
     if (!IDL_PATH) {
-        console.error("💥 FATAL: bet_token_client.idl not found.");
+        console.error("💥 FATAL: bet_token_client.idl not found");
         process.exit(1);
     }
 
+    log("🔌 IDL found:", IDL_PATH);
     await execFileAsync("vara-wallet", ["config", "set", "network", "mainnet"], { timeout: 30000 }).catch(() => {});
     await ensureVoucher();
     await registerAgent();
 
-    let currentNonce = await getInitialNonce();
-    log(`🚀 STARTING WITH NONCE: ${currentNonce}`);
+    log("🚀 LOOP STARTED");
+    let errors = 0;
 
-    const workers = Array.from({ length: CONCURRENCY }, async (_, i) => {
-        while (true) {
-            const myNonce = currentNonce !== undefined ? currentNonce++ : undefined;
-            const ok = await approve(myNonce);
-            if (!ok) {
-                // If failed, wait a bit and re-sync nonce
-                await wait(1000);
-                const syncedNonce = await getInitialNonce();
-                if (syncedNonce !== undefined) currentNonce = Math.max(currentNonce, syncedNonce);
+    while (true) {
+        try {
+            if (approveCounter > 0 && approveCounter % 50 === 0) {
+                await ensureVoucher();
             }
-            // Small delay to prevent overwhelming the RPC
-            await wait(100);
-        }
-    });
 
-    await Promise.all(workers);
+            const ok = await approve();
+            if (ok) {
+                errors = 0;
+            } else {
+                errors++;
+                if (errors >= 5) {
+                    log("⏳ 5 errors, waiting 2s...");
+                    await wait(2000);
+                    errors = 0;
+                    await ensureVoucher();
+                }
+            }
+        } catch (err) {
+            log("💥", err.message?.slice(0, 60));
+            await wait(500);
+        }
+    }
 }
 
 main().catch(err => {
