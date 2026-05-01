@@ -1,4 +1,4 @@
-{
+ {
   "name": "polybaskets-agent",
   "version": "1.0.0",
   "type": "module",
@@ -16,6 +16,8 @@
     "@polkadot/util": "^12.6.2",
     "@polkadot/util-crypto": "^12.6.2",
     "dotenv": "^16.4.5",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "sails-js": "0.5.1",
+    "sails-js-parser": "0.5.1"
   }
 }
