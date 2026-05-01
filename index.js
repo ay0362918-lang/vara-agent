@@ -44,24 +44,9 @@ async function init() {
 }
 
 async function ensureVoucher() {
-    try {
-        const res = await fetch(`${VOUCHER_URL}/${hexAddress}`);
-        const data = await res.json();
-        if (data.voucherId) {
-            voucherId = data.voucherId;
-            if (data.canTopUpNow === false) return;
-        }
-        const postRes = await fetch(VOUCHER_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ account: hexAddress, programs: [BASKET_MARKET, BET_TOKEN, BET_LANE] })
-        });
-        const postData = await postRes.json();
-        if (postData.voucherId) voucherId = postData.voucherId;
-        log("🎫 Voucher:", voucherId);
-    } catch (err) {
-        log("⚠️ Voucher error:", err.message);
-    }
+    // Use the voucher with the latest expiry
+    voucherId = "0xe48bcc939a5e688786c1f10984279854d0d707668f90af641817155807a113ad";
+    log("🎫 Using voucher:", voucherId);
 }
 
 async function approve() {
