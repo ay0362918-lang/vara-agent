@@ -112,21 +112,26 @@ async function ensureVoucher() {
 async function approve() {
     if (!voucherId) return false;
     try {
-        const amount = 20000000000000 + Math.floor(Math.random() * 99999);
-        const rawCall = buildRawCall(voucherId, amount);
-        const hexCall = u8aToHex(rawCall);
+        const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
 
-        // Build extrinsic from raw call bytes
-        const call = api.registry.createType('Call', hexCall);
-        
-        // Create a submittable extrinsic the proper way
-        const submittable = api.tx(call);
-
-        log("📤 Call:", hexCall.slice(0, 80));
+        // Exactly what worked in sandbox — no raw bytes
+        const voucherCall = api.tx.gearVoucher.call(
+            voucherId,
+            {
+                SendMessage: {
+                    destination: BET_TOKEN,
+                    payload: "0x20426574546f6b656e1c417070726f766535848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc" + 
+                             BigInt(amount).toString(16).padStart(64,'0').match(/.{2}/g).reverse().join(''),
+                    gasLimit: 25000000000n,
+                    value: 0n,
+                    keepAlive: false
+                }
+            }
+        );
 
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            submittable.signAndSend(account, { nonce: -1 }, ({ status }) => {
+            voucherCall.signAndSend(account, { nonce: -1 }, ({ status }) => {
                 log("📡", status.type);
                 if (status.isInBlock) {
                     clearTimeout(timer);
