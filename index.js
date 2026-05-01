@@ -24,12 +24,11 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 
-// Pre-decode once — never again
 const BET_LANE_ACTOR = decodeAddress(BET_LANE);
 
 let api, account, voucherId, sails;
 let approveCounter = 0;
-let gasLimit = null; // cached after first successful gas estimate
+let cachedGas = null;
 
 function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
@@ -66,10 +65,16 @@ async function ensureVoucher() {
     try {
         const res = await fetch(`${VOUCHER_URL}/${hexAddress}`);
         const data = await res.json();
-        if (data.voucherId && data.canTopUpNow === false) {
+        log("📋 Voucher state:", JSON.stringify(data).slice(0, 200));
+
+        if (data.voucherId) {
             voucherId = data.voucherId;
-            return;
+            if (data.canTopUpNow === false) {
+                log("🎫 Voucher active:", voucherId);
+                return;
+            }
         }
+
         const postRes = await fetch(VOUCHER_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -79,32 +84,42 @@ async function ensureVoucher() {
             })
         });
         const postData = await postRes.json();
-        voucherId = postData.voucherId || data.voucherId;
-        log("🎫 Voucher:", voucherId);
+        log("📋 POST response:", JSON.stringify(postData).slice(0, 200));
+        if (postData.voucherId) voucherId = postData.voucherId;
+        log("🎫 Voucher set:", voucherId);
     } catch (err) {
         log("⚠️ Voucher error:", err.message);
     }
 }
 
 async function approve() {
-    if (!voucherId || !sails) return false;
+    if (!voucherId || !sails) {
+        log("⚠️ No voucher or sails not ready");
+        return false;
+    }
     try {
-        // Amount as string — u256 requires quoted string per SKILL.md
         const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
 
         const tx = sails.services.BetToken.functions.Approve(BET_LANE_ACTOR, amount);
 
-        // withAccount takes voucherId as second param option
+        // sails-js 0.5.1 — voucherId goes inside withAccount options
         tx.withAccount(account, { voucherId });
 
-        // Cache gas after first call — saves ~500ms per tx
-        if (!gasLimit) {
-            const gas = await tx.calculateGas(false, 10);
-            gasLimit = gas.min_limit;
-            log("⛽ Gas cached:", gasLimit.toString());
+        // Cache gas — only calculate once, reuse forever
+        // sails-js 0.5.1 uses minLimit (not min_limit)
+        if (!cachedGas) {
+            log("⛽ Calculating gas (one time)...");
+            const gasInfo = await tx.calculateGas(false, 10);
+            log("⛽ Gas object:", JSON.stringify(gasInfo));
+            // Try all known property names across versions
+            cachedGas = gasInfo.minLimit
+                ?? gasInfo.min_limit
+                ?? gasInfo.gasLimit
+                ?? BigInt(25000000000);
+            log("⛽ Gas cached:", cachedGas.toString());
         }
 
-        tx.withGas(gasLimit);
+        tx.withGas(cachedGas);
 
         await new Promise((resolve, reject) => {
             tx.signAndSend(account, ({ status }) => {
@@ -114,19 +129,19 @@ async function approve() {
                     resolve(true);
                 }
                 if (status.isError || status.isInvalid) {
-                    reject(new Error("tx failed"));
+                    reject(new Error("tx error/invalid"));
                 }
             }).catch(reject);
         });
 
         return true;
     } catch (err) {
-        // If gas cache is stale, reset it
-        if (String(err).includes("gas") || String(err).includes("Gas")) {
-            gasLimit = null;
-            log("⛽ Gas cache reset");
+        const msg = String(err.message || err);
+        if (msg.includes("gas") || msg.includes("Gas") || msg.includes("wasm")) {
+            cachedGas = null;
+            log("⛽ Gas cache cleared");
         }
-        log("❌", String(err.message || err).slice(0, 80));
+        log("❌", msg.slice(0, 100));
         return false;
     }
 }
@@ -135,7 +150,12 @@ async function main() {
     await init();
     await ensureVoucher();
 
-    log("🚀 NATIVE SDK LOOP — no CLI, persistent WS, cached gas");
+    if (!voucherId) {
+        log("💥 No voucher after init — check hexAddress and voucher backend");
+        process.exit(1);
+    }
+
+    log("🚀 NATIVE SDK LOOP STARTED");
     let errors = 0;
 
     while (true) {
@@ -150,9 +170,10 @@ async function main() {
             } else {
                 errors++;
                 if (errors >= 5) {
+                    log("⏳ 5 errors — refreshing voucher, resetting gas");
                     await wait(2000);
                     await ensureVoucher();
-                    gasLimit = null; // reset gas on repeated failures
+                    cachedGas = null;
                     errors = 0;
                 }
             }
