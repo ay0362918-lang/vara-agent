@@ -93,35 +93,15 @@ async function ensureVoucher() {
 }
 
 async function approve() {
-    if (!voucherId || !sails) {
-        log("⚠️ No voucher or sails not ready");
-        return false;
-    }
+    if (!voucherId || !sails) return false;
     try {
         const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
 
-        const tx = sails.services.BetToken.functions.Approve(BET_LANE_ACTOR, amount);
-
-        // sails-js 0.5.1 — voucherId goes inside withAccount options
-        tx.withAccount(account, { voucherId });
-
-        // Cache gas — only calculate once, reuse forever
-        // sails-js 0.5.1 uses minLimit (not min_limit)
-        // WITH THIS:
-if (!cachedGas) {
-    log("⛽ Calculating gas...");
-    const gasInfo = await tx.calculateGas(false, 10);
-    // Log individual properties safely — no JSON.stringify
-    log("⛽ minLimit:", gasInfo?.minLimit?.toString());
-    log("⛽ min_limit:", gasInfo?.min_limit?.toString());
-    log("⛽ gasLimit:", gasInfo?.gasLimit?.toString());
-    cachedGas = gasInfo.minLimit
-        ?? gasInfo.min_limit
-        ?? gasInfo.gasLimit
-        ?? BigInt(25000000000);
-    log("⛽ Gas cached:", cachedGas.toString());
-}
-        tx.withGas(cachedGas);
+        // Pass BET_LANE as plain hex string — sails-js 0.5.1 handles conversion
+        const tx = sails.services.BetToken.functions
+            .Approve(BET_LANE, amount)
+            .withAccount(account, { voucherId })
+            .withGas(25000000000n);
 
         await new Promise((resolve, reject) => {
             tx.signAndSend(account, ({ status }) => {
@@ -131,22 +111,18 @@ if (!cachedGas) {
                     resolve(true);
                 }
                 if (status.isError || status.isInvalid) {
-                    reject(new Error("tx error/invalid"));
+                    reject(new Error("tx error"));
                 }
             }).catch(reject);
         });
 
         return true;
     } catch (err) {
-        const msg = String(err.message || err);
-        if (msg.includes("gas") || msg.includes("Gas") || msg.includes("wasm")) {
-            cachedGas = null;
-            log("⛽ Gas cache cleared");
-        }
-        log("❌", msg.slice(0, 100));
+        log("❌", String(err.message || err).slice(0, 100));
         return false;
     }
 }
+       
 
 async function main() {
     await init();
