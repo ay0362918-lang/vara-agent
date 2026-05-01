@@ -18,7 +18,6 @@ const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
 const hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 
-// Fixed payload prefix — BetToken + Approve + BET_LANE bytes — never changes
 const PAYLOAD_PREFIX = hexToU8a("0x426574546f6b656e1c417070726f766535848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc");
 
 let api, account, voucherId;
@@ -31,7 +30,6 @@ function log(...args) {
 function encodeU64LE(n) {
     const buf = Buffer.alloc(8);
     const big = BigInt(n);
-    // Write as two 32-bit chunks to avoid 53-bit limit
     buf.writeUInt32LE(Number(big & 0xFFFFFFFFn), 0);
     buf.writeUInt32LE(Number((big >> 32n) & 0xFFFFFFFFn), 4);
     return buf;
@@ -57,13 +55,11 @@ function compactEncode(n) {
 }
 
 function buildRawCall(voucherHex, amount) {
-    // Encode amount as u256 little-endian 32 bytes
     const amountHex = BigInt(amount).toString(16).padStart(64, '0');
     const amountLE = hexToU8a("0x" + amountHex.match(/.{2}/g).reverse().join(''));
 
-    // Full payload = prefix + amount_le
     const payload = Buffer.concat([
-        Buffer.from([0x20]),         // compact length prefix for payload string header
+        Buffer.from([0x20]),
         PAYLOAD_PREFIX,
         amountLE
     ]);
@@ -71,18 +67,16 @@ function buildRawCall(voucherHex, amount) {
     const voucherBytes = hexToU8a(voucherHex);
     const destinationBytes = hexToU8a(BET_TOKEN);
 
-    // Build raw SCALE bytes for gearVoucher.call
-    // pallet 107 (0x6b) + call 1 (0x01) + voucher_id(32) + SendMessage(0x00) + dest(32) + compact_payload_len + payload + gas(8) + value(16) + keepAlive(1)
     return Buffer.concat([
         Buffer.from([0x6b, 0x01]),
         Buffer.from(voucherBytes),
-        Buffer.from([0x00]),                    // SendMessage variant
+        Buffer.from([0x00]),
         Buffer.from(destinationBytes),
         compactEncode(payload.length),
         payload,
         encodeU64LE(25000000000n),
         encodeU128LE(0n),
-        Buffer.from([0x00]),                    // keepAlive = false
+        Buffer.from([0x00]),
     ]);
 }
 
@@ -121,36 +115,38 @@ async function approve() {
         const amount = 20000000000000 + Math.floor(Math.random() * 99999);
         const rawCall = buildRawCall(voucherId, amount);
 
-        log("📤 Raw call hex:", u8aToHex(rawCall).slice(0, 80));
+        log("📤 Raw:", u8aToHex(rawCall).slice(0, 80));
 
         await new Promise((resolve, reject) => {
-            // Replace api.tx(rawCall).signAndSend with this:
-const extrinsic = api.registry.createType('Extrinsic', {
-    method: rawCall
-}, { version: 4 });
+            const timer = setTimeout(() => reject(new Error("timeout")), 15000);
+            api.tx(u8aToHex(rawCall)).signAndSend(account, ({ status }) => {
+                log("📡", status.type);
+                if (status.isInBlock) {
+                    clearTimeout(timer);
+                    approveCounter++;
+                    log(`✅ #${approveCounter}`);
+                    resolve(true);
+                }
+                if (status.isDropped || status.isInvalid || status.isError) {
+                    clearTimeout(timer);
+                    reject(new Error("failed: " + status.type));
+                }
+            }).catch(e => { clearTimeout(timer); reject(e); });
+        });
 
-await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-    api.tx(u8aToHex(rawCall)).signAndSend(account, ({ status }) => {
-        log("📡 Status:", status.type);
-        if (status.isInBlock) {
-            clearTimeout(timer);
-            approveCounter++;
-            log(`✅ #${approveCounter} IN BLOCK`);
-            resolve(true);
-        }
-        if (status.isDropped || status.isInvalid || status.isError) {
-            clearTimeout(timer);
-            reject(new Error("tx failed: " + status.type));
-        }
-    }).catch(e => { clearTimeout(timer); reject(e); });
-});
+        return true;
+    } catch (err) {
+        log("❌", String(err.message || err).slice(0, 100));
+        return false;
+    }
+}
+
 async function main() {
     await init();
     await ensureVoucher();
     if (!voucherId) { log("💥 No voucher"); process.exit(1); }
 
-    log("🚀 LOOP STARTED - raw SCALE bytes, no type registry");
+    log("🚀 LOOP STARTED");
     let errors = 0;
 
     while (true) {
