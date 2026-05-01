@@ -81,15 +81,10 @@ async function approve() {
     try {
         const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
 
-        // Build Sails tx to get encoded payload
+        // Get payload BEFORE withAccount/withGas — clean tx object
         const tx = sails.services.BetToken.functions.Approve(BET_LANE, amount);
-        tx.withAccount(account);
-        tx.withGas(25000000000n);
-
-        // Extract Sails-encoded payload (Arg[1] from the inner extrinsic)
         const sailsPayload = tx.extrinsic.method.args[1];
 
-        // Wrap in gearVoucher.call with SendMessage — this is what CLI does internally
         const voucherCall = api.tx.gearVoucher.call(
             voucherId,
             {
