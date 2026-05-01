@@ -116,15 +116,17 @@ async function approve() {
         const rawCall = buildRawCall(voucherId, amount);
         const hexCall = u8aToHex(rawCall);
 
-        // Create the call object from raw bytes
+        // Build extrinsic from raw call bytes
         const call = api.registry.createType('Call', hexCall);
-        const tx = api.registry.createType('Extrinsic', call);
+        
+        // Create a submittable extrinsic the proper way
+        const submittable = api.tx(call);
 
         log("📤 Call:", hexCall.slice(0, 80));
 
         await new Promise((resolve, reject) => {
             const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            tx.signAndSend(account, { nonce: -1 }, ({ status }) => {
+            submittable.signAndSend(account, { nonce: -1 }, ({ status }) => {
                 log("📡", status.type);
                 if (status.isInBlock) {
                     clearTimeout(timer);
