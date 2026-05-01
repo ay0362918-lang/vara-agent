@@ -1,23 +1,15 @@
- {
+{
   "name": "polybaskets-agent",
   "version": "1.0.0",
   "type": "module",
-  "engines": {
-    "node": "20.x"
-  },
-  "scripts": {
-    "start": "node index.js"
-  },
+  "engines": { "node": "20.x" },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
-    "@gear-js/api": "0.44.1",
-    "@polkadot/api": "^10.11.2",
-    "@polkadot/api-augment": "^10.11.2",
-    "@polkadot/keyring": "^12.6.2",
-    "@polkadot/util": "^12.6.2",
-    "@polkadot/util-crypto": "^12.6.2",
+    "@gear-js/api": "0.36.2",
+    "@polkadot/keyring": "^10.4.2",
+    "@polkadot/util": "^10.4.2",
+    "@polkadot/util-crypto": "^10.4.2",
     "dotenv": "^16.4.5",
-    "node-fetch": "^3.3.2",
-    "sails-js": "0.5.1",
-    "sails-js-parser": "0.5.1"
+    "node-fetch": "^3.3.2"
   }
 }
