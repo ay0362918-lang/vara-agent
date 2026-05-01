@@ -1,4 +1,4 @@
-import { GearApi, decodeAddress } from "@gear-js/api";
+import { GearApi } from "@gear-js/api";
 import { Keyring } from "@polkadot/keyring";
 import { Sails } from "sails-js";
 import { SailsIdlParser } from "sails-js-parser";
@@ -12,7 +12,7 @@ dotenv.config();
 
 if (!process.env.PRIVATE_KEY) { console.error("💥 PRIVATE_KEY not set"); process.exit(1); }
 
-console.log("⚡ HY4 NATIVE SDK");
+console.log("⚡ HY4 NATIVE SDK - MAXIMUM SPEED");
 
 const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
@@ -61,7 +61,6 @@ async function ensureVoucher() {
         const data = await res.json();
         if (data.voucherId) {
             voucherId = data.voucherId;
-            log("🎫 Voucher:", voucherId);
             if (data.canTopUpNow === false) return;
         }
         const postRes = await fetch(VOUCHER_URL, {
@@ -71,7 +70,7 @@ async function ensureVoucher() {
         });
         const postData = await postRes.json();
         if (postData.voucherId) voucherId = postData.voucherId;
-        log("🎫 Voucher set:", voucherId);
+        log("🎫 Voucher:", voucherId);
     } catch (err) {
         log("⚠️ Voucher error:", err.message);
     }
@@ -82,20 +81,35 @@ async function approve() {
     try {
         const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
 
+        // Build Sails tx to get encoded payload
         const tx = sails.services.BetToken.functions.Approve(BET_LANE, amount);
-        tx.withAccount(account, { voucherId });
+        tx.withAccount(account);
         tx.withGas(25000000000n);
 
+        // Extract Sails-encoded payload (Arg[1] from the inner extrinsic)
+        const sailsPayload = tx.extrinsic.method.args[1];
+
+        // Wrap in gearVoucher.call with SendMessage — this is what CLI does internally
+        const voucherCall = api.tx.gearVoucher.call(
+            voucherId,
+            {
+                SendMessage: {
+                    destination: BET_TOKEN,
+                    payload: sailsPayload.toHex(),
+                    gasLimit: 25000000000n,
+                    value: 0,
+                    keepAlive: false
+                }
+            }
+        );
+
         await new Promise((resolve, reject) => {
-            // 15 second timeout per tx
             const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            tx.signAndSend(account, ({ status }) => {
-                if (status.isReady) log("📡 Ready");
-                if (status.isBroadcast) log("📡 Broadcast");
+            voucherCall.signAndSend(account, ({ status }) => {
                 if (status.isInBlock) {
                     clearTimeout(timer);
                     approveCounter++;
-                    log(`✅ #${approveCounter} inBlock`);
+                    log(`✅ #${approveCounter}`);
                     resolve(true);
                 }
                 if (status.isDropped || status.isInvalid || status.isError) {
@@ -116,17 +130,15 @@ async function main() {
     await init();
     await ensureVoucher();
 
-    if (!voucherId) {
-        log("💥 No voucher — exiting");
-        process.exit(1);
-    }
+    if (!voucherId) { log("💥 No voucher"); process.exit(1); }
 
-    log("🚀 LOOP STARTED");
+    log("🚀 LOOP STARTED - native SDK, no CLI");
     let errors = 0;
 
     while (true) {
         try {
             if (approveCounter > 0 && approveCounter % 50 === 0) await ensureVoucher();
+
             const ok = await approve();
             if (ok) {
                 errors = 0;
