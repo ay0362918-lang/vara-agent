@@ -30,8 +30,8 @@ function buildApprovePayload(amountBigInt) {
     const method = Buffer.from("Approve");
     const spender = Buffer.from(BET_LANE.replace("0x", ""), "hex");
     
-    // Convert 128-bit amount to little endian bytes
-    const amountBuffer = Buffer.alloc(16);
+    // Convert 256-bit amount to little endian bytes
+    const amountBuffer = Buffer.alloc(32);
     amountBuffer.writeBigUInt64LE(amountBigInt & 0xFFFFFFFFFFFFFFFFn, 0);
     amountBuffer.writeBigUInt64LE(amountBigInt >> 64n, 8);
 
