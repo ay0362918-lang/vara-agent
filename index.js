@@ -1,159 +1,171 @@
-import { GearApi } from "@gear-js/api";
+import { GearApi, decodeAddress } from "@gear-js/api";
 import { Keyring } from "@polkadot/keyring";
-import { setTimeout as wait } from "timers/promises";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 
 dotenv.config();
 
-if (!process.env.PRIVATE_KEY) { console.error("💥 PRIVATE_KEY not set"); process.exit(1); }
-
-console.log("⚡ HY4 CUSTOM TYPES - MAXIMUM SPEED");
+console.log("⚡ POLYBASKETS ULTRA-FAST SPAMMER (V2) STARTING...");
 
 const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
 const BET_TOKEN = "0x186f6cda18fea13d9fc5969eec5a379220d6726f64c1d5f4b346e89271f917bc";
 const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc";
+
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
-const hexAddress = "0x2a3d796f3e8401782789ebf3f92d12c8d9f0addb39643dbea01b96d230207a3f";
 
-// Manually register the GearVoucherInternalCall type
-// This fixes the type mismatch between @gear-js/api v0.45.0 and Vara spec v11000
-const CUSTOM_TYPES = {
-    GearVoucherInternalCall: {
-        _enum: {
-            SendMessage: {
-                destination: 'GprimitivesActorId',
-                payload: 'Bytes',
-                gas_limit: 'u64',
-                value: 'u128',
-                keep_alive: 'bool'
-            },
-            SendReply: {
-                reply_to_id: 'GprimitivesMessageId',
-                payload: 'Bytes',
-                gas_limit: 'u64',
-                value: 'u128',
-                keep_alive: 'bool'
-            },
-            UploadCode: {
-                code: 'Bytes'
-            },
-            DeclineVoucher: 'Null'
-        }
-    }
-};
-
-let api, account, voucherId;
-let approveCounter = 0;
+let api;
+let account;
+let hexAddress;
+let voucherId;
+let txCounter = 0;
 
 function log(...args) {
-    console.log(`[${new Date().toLocaleTimeString()}]`, ...args);
+    console.log(`[${new Date().toLocaleTimeString()}] ⚡`, ...args);
+}
+
+// Exactly mirrors the Rust payload logic to avoid double SCALE encoding WASM traps!
+function buildApprovePayload(amountBigInt) {
+    const service = Buffer.from("BetToken");
+    const method = Buffer.from("Approve");
+    const spender = Buffer.from(BET_LANE.replace("0x", ""), "hex");
+    
+    // Convert 128-bit amount to little endian bytes
+    const amountBuffer = Buffer.alloc(16);
+    amountBuffer.writeBigUInt64LE(amountBigInt & 0xFFFFFFFFFFFFFFFFn, 0);
+    amountBuffer.writeBigUInt64LE(amountBigInt >> 64n, 8);
+
+    const payload = Buffer.concat([
+        Buffer.from([(service.length) << 2]),
+        service,
+        Buffer.from([(method.length) << 2]),
+        method,
+        spender,
+        amountBuffer
+    ]);
+
+    return "0x" + payload.toString("hex");
 }
 
 async function init() {
-    log("🔌 Connecting...");
-    api = await GearApi.create({
-        providerAddress: RPC,
-        types: CUSTOM_TYPES
-    });
+    log("🔌 Connecting to Vara WebSocket...");
+    api = await GearApi.create({ providerAddress: RPC });
+
     const keyring = new Keyring({ type: "sr25519" });
+    if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY missing in .env");
     account = keyring.addFromUri(process.env.PRIVATE_KEY);
-    log("✅ Wallet:", account.address);
-    log("✅ Custom types registered");
+    hexAddress = decodeAddress(account.address);
+
+    log("✅ Connected:", account.address);
 }
 
 async function ensureVoucher() {
     try {
         const res = await fetch(`${VOUCHER_URL}/${hexAddress}`);
         const data = await res.json();
-        if (data.voucherId) {
+
+        if (data.voucherId && data.canTopUpNow === false) {
             voucherId = data.voucherId;
-            if (data.canTopUpNow === false) return;
+            return;
         }
+
         const postRes = await fetch(VOUCHER_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ account: hexAddress, programs: [BASKET_MARKET, BET_TOKEN, BET_LANE] })
         });
+
         const postData = await postRes.json();
         if (postData.voucherId) voucherId = postData.voucherId;
+        else if (data.voucherId) voucherId = data.voucherId;
+        
         log("🎫 Voucher:", voucherId);
     } catch (err) {
         log("⚠️ Voucher error:", err.message);
     }
 }
 
-async function approve() {
-    if (!voucherId) return false;
+async function spamApproveDirectAPI(batchSize = 10) {
+    if (!voucherId) return 0;
+
     try {
-        const amount = String(20000000000000 + Math.floor(Math.random() * 99999));
+        // Fetch nonce ONCE
+        const startingNonce = await api.rpc.system.accountNextIndex(account.address);
+        let nonce = startingNonce.toNumber();
 
-        const voucherCall = api.tx.gearVoucher.call(
-            voucherId,
-            {
-                SendMessage: {
-                    destination: BET_TOKEN,
-                    payload: "0x20426574546f6b656e1c417070726f766535848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc" +
-                        BigInt(amount).toString(16).padStart(64, '0').match(/.{2}/g).reverse().join(''),
-                    gas_limit: 25000000000n,
-                    value: 0n,
-                    keep_alive: false
-                }
-            }
-        );
+        const promises = [];
 
-        await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error("timeout")), 15000);
-            voucherCall.signAndSend(account, { nonce: -1 }, ({ status }) => {
-                log("📡", status.type);
-                if (status.isInBlock) {
-                    clearTimeout(timer);
-                    approveCounter++;
-                    log(`✅ #${approveCounter}`);
-                    resolve(true);
-                }
-                if (status.isDropped || status.isInvalid || status.isError) {
-                    clearTimeout(timer);
-                    reject(new Error("failed: " + status.type));
-                }
-            }).catch(e => { clearTimeout(timer); reject(e); });
-        });
+        for (let i = 0; i < batchSize; i++) {
+            const amount = 20000000000000n + BigInt(Math.floor(Math.random() * 999000));
+            const payloadHex = buildApprovePayload(amount);
 
-        return true;
+            // Construct raw Gear message
+            const message = {
+                destination: BET_TOKEN,
+                payload: payloadHex,
+                gasLimit: 25000000000,
+                value: 0
+            };
+
+            // Call contract using the voucher
+            const tx = api.voucher.call(account.address, voucherId, message);
+
+            const currentNonce = nonce++;
+
+            // Sign and submit, but DO NOT await block inclusion
+            const txPromise = new Promise((resolve) => {
+                tx.signAndSend(account, { nonce: currentNonce }, ({ status, events }) => {
+                    if (status.isReady || status.isBroadcast) {
+                        // Immediately resolve once it hits the mempool
+                        resolve(true);
+                    }
+                }).catch(err => {
+                    resolve(false);
+                });
+            });
+
+            promises.push(txPromise);
+            
+            txCounter++;
+            log(`✅ TX #${txCounter} | Nonce pipelined: ${currentNonce}`);
+        }
+
+        // Wait for all txs in batch to reach mempool
+        await Promise.all(promises);
+        return batchSize;
+
     } catch (err) {
-        log("❌", String(err.message || err).slice(0, 100));
-        return false;
+        log("❌ Batch error:", err.message);
+        return 0;
+    }
+}
+
+async function loop() {
+    log("🚀 ULTRA-FAST NONCE-PIPELINING LOOP STARTED");
+    
+    await ensureVoucher();
+    setInterval(ensureVoucher, 60_000);
+
+    let round = 0;
+    while (true) {
+        try {
+            round++;
+            await spamApproveDirectAPI(10); // Fire 10 transactions per batch
+            // Chain block time naturally throttles us slightly, but mempool accepts them instantly
+            await new Promise(r => setTimeout(r, 2000)); 
+        } catch (err) {
+            log("💥 Loop error:", err.message);
+            await new Promise(r => setTimeout(r, 3000));
+        }
     }
 }
 
 async function main() {
     await init();
-    await ensureVoucher();
-    if (!voucherId) { log("💥 No voucher"); process.exit(1); }
-
-    log("🚀 LOOP STARTED - custom types, no CLI");
-    let errors = 0;
-
-    while (true) {
-        try {
-            if (approveCounter > 0 && approveCounter % 50 === 0) await ensureVoucher();
-            const ok = await approve();
-            if (ok) {
-                errors = 0;
-            } else {
-                errors++;
-                if (errors >= 5) {
-                    await wait(2000);
-                    await ensureVoucher();
-                    errors = 0;
-                }
-            }
-        } catch (err) {
-            log("💥", err.message?.slice(0, 60));
-            await wait(500);
-        }
-    }
+    await loop();
 }
 
-main().catch(err => { console.error("💥 Fatal:", err); process.exit(1); });
+main().catch(err => {
+    console.error("💥 Fatal:", err);
+    process.exit(1);
+});
