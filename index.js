@@ -99,7 +99,7 @@ async function spamApproveDirectAPI(batchSize = 10) {
             const amount = 20000000000000n + BigInt(Math.floor(Math.random() * 999000));
             const payloadHex = buildApprovePayload(amount);
 
-            // Construct raw Gear message
+            // Construct raw Gear message extrinsic
             const message = {
                 destination: BET_TOKEN,
                 payload: payloadHex,
@@ -107,8 +107,9 @@ async function spamApproveDirectAPI(batchSize = 10) {
                 value: 0
             };
 
-            // Call contract using the voucher
-            const tx = api.voucher.call(account.address, voucherId, message);
+            // Wrap the message extrinsic in a voucher call
+            const msgTx = api.message.send(message);
+            const tx = api.voucher.call(voucherId, { SendMessage: msgTx });
 
             const currentNonce = nonce++;
 
