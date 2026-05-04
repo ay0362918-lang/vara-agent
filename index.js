@@ -11,8 +11,8 @@ const RPC = "wss://rpc.vara.network";
 const BASKET_MARKET = "0xe5dd153b813c768b109094a9e2eb496c38216b1dbe868391f1d20ac927b7d2c2";
 const BET_TOKEN = "0x186f6cda18fea13d9fc5969eec5a379220d6726f64c1d5f4b346e89271f917bc";
 const BET_LANE = "0x35848dea0ab64f283497deaff93b12fe4d17649624b2cd5149f253ef372b29dc";
-
 const VOUCHER_URL = "https://voucher-backend-production-5a1b.up.railway.app/voucher";
+const HARDCODED_VOUCHER_ID = "0x6b2ffcc0b5d42a134545d71448768ccb87cbc16b20da124a117d756bbac6c4fe";
 
 let api;
 let account;
@@ -24,17 +24,13 @@ function log(...args) {
     console.log(`[${new Date().toLocaleTimeString()}] ⚡`, ...args);
 }
 
-// Exactly mirrors the Rust payload logic to avoid double SCALE encoding WASM traps!
 function buildApprovePayload(amountBigInt) {
     const service = Buffer.from("BetToken");
     const method = Buffer.from("Approve");
     const spender = Buffer.from(BET_LANE.replace("0x", ""), "hex");
-    
-    // Convert 256-bit amount to little endian bytes
     const amountBuffer = Buffer.alloc(32);
     amountBuffer.writeBigUInt64LE(amountBigInt & 0xFFFFFFFFFFFFFFFFn, 0);
     amountBuffer.writeBigUInt64LE(amountBigInt >> 64n, 8);
-
     const payload = Buffer.concat([
         Buffer.from([(service.length) << 2]),
         service,
@@ -43,55 +39,67 @@ function buildApprovePayload(amountBigInt) {
         spender,
         amountBuffer
     ]);
-
     return "0x" + payload.toString("hex");
 }
 
 async function init() {
     log("🔌 Connecting to Vara WebSocket...");
     api = await GearApi.create({ providerAddress: RPC });
-
     const keyring = new Keyring({ type: "sr25519" });
     if (!process.env.PRIVATE_KEY) throw new Error("PRIVATE_KEY missing in .env");
     account = keyring.addFromUri(process.env.PRIVATE_KEY);
     hexAddress = decodeAddress(account.address);
-
     log("✅ Connected:", account.address);
+    log("📍 Hex address:", hexAddress);
 }
 
 async function ensureVoucher() {
     try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        setTimeout(() => controller.abort(), 5000);
         const res = await fetch(`${VOUCHER_URL}/${hexAddress}`, { signal: controller.signal });
-        clearTimeout(timeout);
         const data = await res.json();
-        if (data.voucherId) {
-            voucherId = data.voucherId;
-            return;
+
+        if (data.voucherId) voucherId = data.voucherId;
+
+        if (data.canTopUpNow === true) {
+            log("🔄 Topping up voucher...");
+            try {
+                const controller2 = new AbortController();
+                setTimeout(() => controller2.abort(), 5000);
+                const postRes = await fetch(VOUCHER_URL, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ account: hexAddress, programs: [BASKET_MARKET, BET_TOKEN, BET_LANE] }),
+                    signal: controller2.signal
+                });
+                const postData = await postRes.json();
+                if (postData.voucherId) {
+                    voucherId = postData.voucherId;
+                    log("✅ Voucher topped up:", voucherId);
+                }
+            } catch (e) {
+                log("⚠️ Top-up POST failed:", e.message);
+            }
         }
     } catch (err) {
-        log("⚠️ Voucher backend down, using hardcoded voucher");
+        log("⚠️ Voucher backend issue:", err.message);
+        if (!voucherId) voucherId = HARDCODED_VOUCHER_ID;
     }
-    voucherId = HARDCODED_VOUCHER_ID;
-    log("🎫 Using hardcoded voucher:", voucherId);
 }
 
 async function spamApproveDirectAPI(batchSize = 10) {
     if (!voucherId) return 0;
 
     try {
-        // Fetch nonce ONCE
         const startingNonce = await api.rpc.system.accountNextIndex(account.address);
         let nonce = startingNonce.toNumber();
-
         const promises = [];
 
         for (let i = 0; i < batchSize; i++) {
             const amount = 20000000000000n + BigInt(Math.floor(Math.random() * 999000));
             const payloadHex = buildApprovePayload(amount);
 
-            // Construct raw Gear message extrinsic
             const message = {
                 destination: BET_TOKEN,
                 payload: payloadHex,
@@ -99,31 +107,23 @@ async function spamApproveDirectAPI(batchSize = 10) {
                 value: 0
             };
 
-            // Wrap the message extrinsic in a voucher call
             const msgTx = api.message.send(message);
             const tx = api.voucher.call(voucherId, { SendMessage: msgTx });
-
             const currentNonce = nonce++;
 
-            // Sign and submit, but DO NOT await block inclusion
             const txPromise = new Promise((resolve) => {
-                tx.signAndSend(account, { nonce: currentNonce }, ({ status, events }) => {
+                tx.signAndSend(account, { nonce: currentNonce }, ({ status }) => {
                     if (status.isReady || status.isBroadcast) {
-                        // Immediately resolve once it hits the mempool
                         resolve(true);
                     }
-                }).catch(err => {
-                    resolve(false);
-                });
+                }).catch(() => resolve(false));
             });
 
             promises.push(txPromise);
-            
             txCounter++;
             log(`✅ TX #${txCounter} | Nonce pipelined: ${currentNonce}`);
         }
 
-        // Wait for all txs in batch to reach mempool
         await Promise.all(promises);
         return batchSize;
 
@@ -135,8 +135,7 @@ async function spamApproveDirectAPI(batchSize = 10) {
 
 async function loop() {
     log("🚀 ULTRA-FAST NONCE-PIPELINING LOOP STARTED");
-    
-    // Keep retrying until voucher is obtained
+
     while (!voucherId) {
         await ensureVoucher();
         if (!voucherId) {
@@ -144,7 +143,7 @@ async function loop() {
             await new Promise(r => setTimeout(r, 5000));
         }
     }
-    
+
     setInterval(ensureVoucher, 60_000);
 
     while (true) {
