@@ -144,16 +144,21 @@ async function spamApproveDirectAPI(batchSize = 10) {
 async function loop() {
     log("🚀 ULTRA-FAST NONCE-PIPELINING LOOP STARTED");
     
-    await ensureVoucher();
+    // Keep retrying until voucher is obtained
+    while (!voucherId) {
+        await ensureVoucher();
+        if (!voucherId) {
+            log("⏳ No voucher yet, retrying in 5s...");
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+    
     setInterval(ensureVoucher, 60_000);
 
-    let round = 0;
     while (true) {
         try {
-            round++;
-            await spamApproveDirectAPI(10); // Fire 10 transactions per batch
-            // Chain block time naturally throttles us slightly, but mempool accepts them instantly
-            await new Promise(r => setTimeout(r, 2000)); 
+            await spamApproveDirectAPI(10);
+            await new Promise(r => setTimeout(r, 2000));
         } catch (err) {
             log("💥 Loop error:", err.message);
             await new Promise(r => setTimeout(r, 3000));
