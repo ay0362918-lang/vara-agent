@@ -61,28 +61,20 @@ async function init() {
 
 async function ensureVoucher() {
     try {
-        const res = await fetch(`${VOUCHER_URL}/${hexAddress}`);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        const res = await fetch(`${VOUCHER_URL}/${hexAddress}`, { signal: controller.signal });
+        clearTimeout(timeout);
         const data = await res.json();
-
-        if (data.voucherId && data.canTopUpNow === false) {
+        if (data.voucherId) {
             voucherId = data.voucherId;
             return;
         }
-
-        const postRes = await fetch(VOUCHER_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ account: hexAddress, programs: [BASKET_MARKET, BET_TOKEN, BET_LANE] })
-        });
-
-        const postData = await postRes.json();
-        if (postData.voucherId) voucherId = postData.voucherId;
-        else if (data.voucherId) voucherId = data.voucherId;
-        
-        log("🎫 Voucher:", voucherId);
     } catch (err) {
-        log("⚠️ Voucher error:", err.message);
+        log("⚠️ Voucher backend down, using hardcoded voucher");
     }
+    voucherId = HARDCODED_VOUCHER_ID;
+    log("🎫 Using hardcoded voucher:", voucherId);
 }
 
 async function spamApproveDirectAPI(batchSize = 10) {
